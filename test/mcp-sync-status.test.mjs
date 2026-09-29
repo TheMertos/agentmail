@@ -1,0 +1,41 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SqliteMailStore } from '../src/storage/sqlite-store.mjs';
+import { createSyncStatusHandlers } from '../src/mcp/sync-status-tools.mjs';
+
+test('sync_status MCP handler returns structured folder progress without credentials', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agentmail-mcp-status-'));
+  const store = new SqliteMailStore(join(dir, 'mail.db'));
+  store.activateAccount({ id: 'acct', email: 'u@example.test', provider: 'imap', secretRef: 'opaque-ref' });
+  store.checkpoint({
+    accountId: 'acct',
+    mailboxId: 'INBOX',
+    mode: 'incremental',
+    lastUid: 10,
+    uidValidity: '9',
+    remoteMessages: null,
+    uidNext: null,
+    localMessageCount: 10,
+    status: 'syncing',
+    messageCount: 10
+  });
+  const registry = {
+    status: (id) => (id === 'acct' ? { id: 'acct', enabled: true } : null),
+    list: () => [{ id: 'acct' }]
+  };
+  const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ store, registry });
+  const payload = JSON.parse(syncStatus({ accountId: 'acct' }).content[0].text);
+  assert.equal(payload.accountId, 'acct');
+  assert.equal(payload.folders[0].percentage, null);
+  assert.equal(typeof payload.folders[0].percentageReason, 'string');
+  assert.equal(payload.secretRef, undefined);
+  assert.equal(payload.password, undefined);
+
+  const allPayload = JSON.parse(syncStatusAll().content[0].text);
+  assert.equal(allPayload.accounts.length, 1);
+  store.close();
+  rmSync(dir, { recursive: true, force: true });
+});

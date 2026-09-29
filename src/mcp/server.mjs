@@ -10,6 +10,7 @@ import { ImapProvider } from '../mail/imap-provider.mjs';
 import { SmtpProvider } from '../mail/smtp-provider.mjs';
 import { createApproval, verifyApproval } from '../core/approval.mjs';
 import { composeOutgoingMessage } from '../core/compose-message.mjs';
+import { createSyncStatusHandlers } from './sync-status-tools.mjs';
 
 const IMAP_FIELDS = ['incoming.host', 'incoming.port', 'incoming.security', 'incoming.username', 'incoming.password'];
 const SMTP_FIELDS = ['outgoing.host', 'outgoing.port', 'outgoing.security', 'outgoing.username', 'outgoing.password'];
@@ -43,6 +44,7 @@ async function providerFactory({ account, lease, operation }) {
 }
 
 const mailService = new MailService({ accountRegistry: registry, leaseBroker, providerFactory });
+const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ store, registry });
 const server = new McpServer({ name: 'agentmail', version: '0.1.0' });
 const pendingApprovals = new Map();
 
@@ -163,6 +165,16 @@ server.registerTool('mailbox_sync_all', {
   }
   return text({ mode, results });
 });
+
+server.registerTool('sync_status', {
+  description: 'Return resumable sync progress per folder for one account. Never returns credentials.',
+  inputSchema: { accountId: z.string().min(1) }
+}, async ({ accountId }) => syncStatus({ accountId }));
+
+server.registerTool('sync_status_all', {
+  description: 'Return resumable sync progress for every active account. Never returns credentials.',
+  inputSchema: {}
+}, async () => syncStatusAll());
 
 server.registerTool('signature_create', {
   description: 'Create an account-scoped HTML/plain-text signature profile. HTML is sanitized before storage.',

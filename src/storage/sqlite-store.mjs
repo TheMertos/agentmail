@@ -66,20 +66,42 @@ const SCHEMA = `
     message_count INTEGER NOT NULL,
     last_uid INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL,
+    uid_validity TEXT,
+    remote_messages INTEGER,
+    uid_next INTEGER,
+    local_message_count INTEGER,
+    status TEXT,
+    started_at TEXT,
+    error_class TEXT,
+    completed_at TEXT,
     PRIMARY KEY (account_id, mailbox_id)
   );
 `;
+
+const CHECKPOINT_MIGRATIONS = [
+  'ALTER TABLE sync_checkpoints ADD COLUMN uid_validity TEXT',
+  'ALTER TABLE sync_checkpoints ADD COLUMN remote_messages INTEGER',
+  'ALTER TABLE sync_checkpoints ADD COLUMN uid_next INTEGER',
+  'ALTER TABLE sync_checkpoints ADD COLUMN local_message_count INTEGER',
+  'ALTER TABLE sync_checkpoints ADD COLUMN status TEXT',
+  'ALTER TABLE sync_checkpoints ADD COLUMN started_at TEXT',
+  'ALTER TABLE sync_checkpoints ADD COLUMN error_class TEXT',
+  'ALTER TABLE sync_checkpoints ADD COLUMN completed_at TEXT'
+];
 
 export class SqliteMailStore {
   constructor(filename = ':memory:') {
     this.db = new Database(filename);
     this.db.pragma('journal_mode = WAL');
     this.db.exec(SCHEMA);
+    for (const sql of CHECKPOINT_MIGRATIONS) {
+      try { this.db.exec(sql); } catch { /* column may already exist */ }
+    }
     this.accountStatement = this.db.prepare(`INSERT INTO active_accounts(account_id, email, provider, secret_ref, connection_json, enabled, updated_at) VALUES (@id, @email, @provider, @secretRef, @connection, 1, @updatedAt) ON CONFLICT(account_id) DO UPDATE SET email=excluded.email, provider=excluded.provider, secret_ref=excluded.secret_ref, connection_json=excluded.connection_json, enabled=1, updated_at=excluded.updated_at`);
     this.accountDisableStatement = this.db.prepare('UPDATE active_accounts SET enabled = 0, updated_at = @updatedAt WHERE account_id = @id');
     this.upsertFolderStatement = this.db.prepare(`INSERT INTO folders(account_id, folder_id, path, metadata_json) VALUES (@accountId, @id, @path, @metadata) ON CONFLICT(account_id, folder_id) DO UPDATE SET path=excluded.path, metadata_json=excluded.metadata_json`);
     this.upsertMessageStatement = this.db.prepare(`INSERT INTO messages(message_key, account_id, mailbox_id, uid, uid_validity, internal_date, flags_json, envelope_json, raw_mime, attachments_json, updated_at) VALUES (@key, @accountId, @mailboxId, @uid, @uidValidity, @internalDate, @flags, @envelope, @raw, @attachments, @updatedAt) ON CONFLICT(message_key) DO UPDATE SET flags_json=excluded.flags_json, internal_date=excluded.internal_date, envelope_json=excluded.envelope_json, raw_mime=excluded.raw_mime, attachments_json=excluded.attachments_json, updated_at=excluded.updated_at`);
-    this.checkpointStatement = this.db.prepare(`INSERT INTO sync_checkpoints(account_id, mailbox_id, mode, message_count, last_uid, updated_at) VALUES (@accountId, @mailboxId, @mode, @messageCount, @lastUid, @updatedAt) ON CONFLICT(account_id, mailbox_id) DO UPDATE SET mode=excluded.mode, message_count=excluded.message_count, last_uid=excluded.last_uid, updated_at=excluded.updated_at`);
+    this.checkpointStatement = this.db.prepare(`INSERT INTO sync_checkpoints(account_id, mailbox_id, mode, message_count, last_uid, updated_at, uid_validity, remote_messages, uid_next, local_message_count, status, started_at, error_class, completed_at) VALUES (@accountId, @mailboxId, @mode, @messageCount, @lastUid, @updatedAt, @uidValidity, @remoteMessages, @uidNext, @localMessageCount, @status, @startedAt, @errorClass, @completedAt) ON CONFLICT(account_id, mailbox_id) DO UPDATE SET mode=excluded.mode, message_count=excluded.message_count, last_uid=excluded.last_uid, updated_at=excluded.updated_at, uid_validity=excluded.uid_validity, remote_messages=excluded.remote_messages, uid_next=excluded.uid_next, local_message_count=excluded.local_message_count, status=excluded.status, started_at=COALESCE(sync_checkpoints.started_at, excluded.started_at), error_class=excluded.error_class, completed_at=excluded.completed_at`);
   }
 
   activateAccount(account) {
@@ -187,7 +209,22 @@ export class SqliteMailStore {
   }
 
   async checkpoint(checkpoint) {
-    this.checkpointStatement.run({ ...checkpoint, lastUid: checkpoint.lastUid ?? 0, updatedAt: new Date().toISOString() });
+    this.checkpointStatement.run({
+      accountId: checkpoint.accountId,
+      mailboxId: checkpoint.mailboxId,
+      mode: checkpoint.mode ?? 'incremental',
+      messageCount: checkpoint.messageCount ?? checkpoint.localMessageCount ?? 0,
+      lastUid: checkpoint.lastUid ?? 0,
+      updatedAt: checkpoint.updatedAt ?? new Date().toISOString(),
+      uidValidity: checkpoint.uidValidity ?? null,
+      remoteMessages: checkpoint.remoteMessages ?? null,
+      uidNext: checkpoint.uidNext ?? null,
+      localMessageCount: checkpoint.localMessageCount ?? checkpoint.messageCount ?? 0,
+      status: checkpoint.status ?? null,
+      startedAt: checkpoint.startedAt ?? null,
+      errorClass: checkpoint.errorClass ?? null,
+      completedAt: checkpoint.completedAt ?? null
+    });
   }
 
   searchMessages(accountId, query, limit = 50) {
@@ -203,6 +240,43 @@ export class SqliteMailStore {
     return this.db.prepare('SELECT COUNT(*) AS count FROM messages WHERE account_id = ?').get(accountId).count;
   }
 
+  countMessagesInMailbox(accountId, mailboxId) {
+    return this.db.prepare('SELECT COUNT(*) AS count FROM messages WHERE account_id = ? AND mailbox_id = ?').get(accountId, mailboxId).count;
+  }
+
+  clearMailboxMessages(accountId, mailboxId) {
+    this.db.prepare('DELETE FROM messages WHERE account_id = ? AND mailbox_id = ?').run(accountId, mailboxId);
+  }
+
+  listSyncCheckpoints(accountId) {
+    return this.db.prepare('SELECT * FROM sync_checkpoints WHERE account_id = ? ORDER BY mailbox_id').all(accountId).map((row) => this.#mapCheckpointRow(row));
+  }
+
+  getFolderPath(accountId, folderId) {
+    const row = this.db.prepare('SELECT path FROM folders WHERE account_id = ? AND folder_id = ?').get(accountId, folderId);
+    return row?.path ?? folderId;
+  }
+
+  #mapCheckpointRow(row) {
+    if (!row) return null;
+    return {
+      accountId: row.account_id,
+      mailboxId: row.mailbox_id,
+      mode: row.mode,
+      messageCount: row.message_count,
+      lastUid: row.last_uid,
+      uidValidity: row.uid_validity,
+      remoteMessages: row.remote_messages,
+      uidNext: row.uid_next,
+      localMessageCount: row.local_message_count,
+      status: row.status,
+      startedAt: row.started_at,
+      errorClass: row.error_class,
+      completedAt: row.completed_at,
+      updatedAt: row.updated_at
+    };
+  }
+
   getMessage(key) {
     const row = this.db.prepare('SELECT * FROM messages WHERE message_key = ?').get(key);
     if (!row) return null;
@@ -210,7 +284,8 @@ export class SqliteMailStore {
   }
 
   getCheckpoint(accountId, mailboxId) {
-    return this.db.prepare('SELECT * FROM sync_checkpoints WHERE account_id = ? AND mailbox_id = ?').get(accountId, mailboxId) ?? null;
+    const row = this.db.prepare('SELECT * FROM sync_checkpoints WHERE account_id = ? AND mailbox_id = ?').get(accountId, mailboxId);
+    return row ? this.#mapCheckpointRow(row) : null;
   }
 
   close() { this.db.close(); }

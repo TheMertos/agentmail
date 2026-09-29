@@ -20,16 +20,39 @@ export class ImapProvider {
     return this;
   }
 
-  async listMailboxes() {
+  async listMailboxes({ includeStatus = true } = {}) {
     await this.connect();
-    return (await this.client.list()).map((mailbox) => ({
-      id: mailbox.path,
-      path: mailbox.path,
-      name: mailbox.name,
-      parent: mailbox.parent,
-      specialUse: mailbox.specialUse ?? null,
-      flags: mailbox.flags ? [...mailbox.flags] : []
-    }));
+    const listed = await this.client.list();
+    const mailboxes = [];
+    for (const mailbox of listed) {
+      let messages = null;
+      let uidNext = null;
+      let uidValidity = null;
+      if (includeStatus) {
+        try {
+          const status = await this.client.status(mailbox.path, { messages: true, uidNext: true, uidValidity: true });
+          messages = status.messages ?? null;
+          uidNext = status.uidNext ?? null;
+          uidValidity = status.uidValidity != null ? String(status.uidValidity) : null;
+        } catch {
+          messages = null;
+          uidNext = null;
+          uidValidity = null;
+        }
+      }
+      mailboxes.push({
+        id: mailbox.path,
+        path: mailbox.path,
+        name: mailbox.name,
+        parent: mailbox.parent,
+        specialUse: mailbox.specialUse ?? null,
+        flags: mailbox.flags ? [...mailbox.flags] : [],
+        messages,
+        uidNext,
+        uidValidity
+      });
+    }
+    return mailboxes;
   }
 
   async append(mailbox, mime, flags = ['\\Seen']) {

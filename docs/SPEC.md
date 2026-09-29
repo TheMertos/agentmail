@@ -58,7 +58,19 @@ AgentMail is a self-hosted, open-source mail client for reliable AI-assisted ema
 - Immutable audit events with redacted metadata.
 - Provider response and Sent-folder/read-back verification.
 
-## 4. First release acceptance criteria
+## Resumable sync and progress (required)
+
+- The sync engine must checkpoint after every bounded message batch, not only after an entire folder completes.
+- A process crash, MCP timeout, Docker restart, or provider disconnect must resume from the last persisted UID/checkpoint without restarting the account from UID 1.
+- Persist per-account/per-mailbox: UIDVALIDITY, last processed UID, remote message count/UIDNEXT when available, local message count, status, startedAt, updatedAt, error class, and completedAt.
+- If UIDVALIDITY changes, reset only the affected mailbox checkpoint and rebuild that mailbox safely.
+- Expose `sync_status(accountId)` via MCP with per-folder remote count, local count, downloaded count, remaining estimate, percentage, state, last checkpoint, and error.
+- Expose `sync_status_all()` for every active account.
+- Never report a guessed overall percentage. If the provider does not expose a reliable total, return `percentage: null` and explain why.
+- IMAP provider mailbox listing must fetch a lightweight `messages`/`uidNext` status per selectable folder so progress can be calculated without downloading bodies.
+- Full sync and incremental sync must both be resumable. Incremental sync must still refresh flags/expunges where supported and must not reset a completed mailbox unnecessarily.
+- Add TDD tests for batch checkpoint persistence, crash/resume, UIDVALIDITY reset, accurate percentage, unknown percentage, and MCP status tool output.
+
 
 - One account can be onboarded through SecretFabric.
 - Inbox can sync and display one complete thread.

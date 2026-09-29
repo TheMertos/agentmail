@@ -33,7 +33,7 @@ Make email operations reliable instead of improvisational:
 ### Mail
 
 - multiple accounts and folders/labels;
-- IMAP sync with incremental state and offline cache;
+- IMAP sync with resumable per-batch checkpoints, per-folder progress, and offline cache;
 - SMTP submission;
 - Gmail and Microsoft OAuth adapters;
 - threaded conversations;
@@ -98,7 +98,9 @@ Make email operations reliable instead of improvisational:
 
 ## Development status
 
-AgentMail is a real email client first and an AI assistant second. The Thunderbird-parity requirements are tracked in [`docs/THUNDERBIRD-PARITY.md`](docs/THUNDERBIRD-PARITY.md). The current UI is an early prototype; IMAP/SMTP synchronization, persistence, and composition are implementation work still ahead.
+AgentMail is a real email client first and an AI assistant second. The Thunderbird-parity requirements are tracked in [`docs/THUNDERBIRD-PARITY.md`](docs/THUNDERBIRD-PARITY.md). The headless MCP server supports resumable folder sync (`mailbox_sync`), progress inspection (`sync_status`, `sync_status_all`), local search/read, drafts, signatures, and approval-gated send.
+
+Resumable sync behavior is specified in [`docs/SPEC.md`](docs/SPEC.md) and summarized in [`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).
 
 See [`docs/PRODUCT.md`](docs/PRODUCT.md) for scope, threat model, and acceptance criteria.
 
