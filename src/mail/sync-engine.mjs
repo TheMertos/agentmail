@@ -76,6 +76,7 @@ export async function syncAccount({ accountId, provider, store, mode = 'incremen
     });
 
     while (true) {
+      if (remote.uidNext != null && lastUid >= remote.uidNext - 1) break;
       let batchCount = 0;
       let batchHighUid = lastUid;
       const activeCheckpoint = { lastUid, uidValidity };

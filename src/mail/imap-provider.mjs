@@ -1,5 +1,19 @@
 import { ImapFlow } from 'imapflow';
 
+/**
+ * Compute inclusive UID range for one bounded fetch batch.
+ * @param {number} startUid First UID to fetch.
+ * @param {number} batchSize Maximum UIDs in the batch.
+ * @param {number|null} uidNext Mailbox uidNext from STATUS.
+ * @returns {{ startUid: number, endUid: number }|null} Range or null when nothing remains.
+ */
+export function boundedUidRange(startUid, batchSize, uidNext) {
+  if (uidNext == null || startUid >= uidNext) return null;
+  const endUid = Math.min(startUid + batchSize - 1, uidNext - 1);
+  if (startUid > endUid) return null;
+  return { startUid, endUid };
+}
+
 export class ImapProvider {
   constructor({ connection, credentials }) {
     if (!connection?.host || !connection?.port || !credentials?.username) throw new TypeError('IMAP connection and trusted credentials are required');
@@ -83,8 +97,9 @@ export class ImapProvider {
       const status = await this.client.status(mailbox.path, { messages: true, uidValidity: true, uidNext: true });
       if (!status.messages) return;
       const startUid = checkpoint?.uidValidity === String(status.uidValidity) ? Math.max(1, Number(checkpoint.lastUid ?? 0) + 1) : 1;
-      if (status.uidNext && startUid >= status.uidNext) return;
-      for await (const message of this.client.fetch(`${startUid}:*`, { uid: true, flags: true, internalDate: true, envelope: true, source: true }, { uid: true, maxMessages: batchSize })) {
+      const range = boundedUidRange(startUid, batchSize, status.uidNext ?? null);
+      if (!range) return;
+      for await (const message of this.client.fetch(`${range.startUid}:${range.endUid}`, { uid: true, flags: true, internalDate: true, envelope: true, source: true }, { uid: true })) {
         yield {
           uid: message.uid,
           uidValidity: String(status.uidValidity),
