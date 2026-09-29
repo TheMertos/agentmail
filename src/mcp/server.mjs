@@ -9,6 +9,7 @@ import { createSecretFabricResolver } from '../security/secretfabric-resolver.mj
 import { ImapProvider } from '../mail/imap-provider.mjs';
 import { SmtpProvider } from '../mail/smtp-provider.mjs';
 import { createApproval, verifyApproval } from '../core/approval.mjs';
+import { composeOutgoingMessage } from '../core/compose-message.mjs';
 
 const IMAP_FIELDS = ['incoming.host', 'incoming.port', 'incoming.security', 'incoming.username', 'incoming.password'];
 const SMTP_FIELDS = ['outgoing.host', 'outgoing.port', 'outgoing.security', 'outgoing.username', 'outgoing.password'];
@@ -161,6 +162,65 @@ server.registerTool('mailbox_sync_all', {
     }
   }
   return text({ mode, results });
+});
+
+server.registerTool('signature_create', {
+  description: 'Create an account-scoped HTML/plain-text signature profile. HTML is sanitized before storage.',
+  inputSchema: { accountId: z.string().min(1), name: z.string().min(1), html: z.string(), text: z.string() }
+}, async ({ accountId, name, html, text: bodyText }) => {
+  if (!registry.status(accountId)?.enabled) return text({ error: 'account_not_active' });
+  return text(store.createSignatureProfile({ accountId, name, html, text: bodyText }));
+});
+
+server.registerTool('signature_update', {
+  description: 'Update a signature profile. Creates a new version and re-sanitizes HTML.',
+  inputSchema: { profileId: z.string().uuid(), name: z.string().optional(), html: z.string().optional(), text: z.string().optional(), enabled: z.boolean().optional() }
+}, async ({ profileId, ...changes }) => {
+  try {
+    return text(store.updateSignatureProfile(profileId, changes));
+  } catch (error) {
+    return text({ error: error.message });
+  }
+});
+
+server.registerTool('signature_list', {
+  description: 'List enabled signature profiles for one active account.',
+  inputSchema: { accountId: z.string().min(1) }
+}, async ({ accountId }) => text(store.listSignatureProfiles(accountId)));
+
+server.registerTool('signature_set_default', {
+  description: 'Set the default signature profile used for new sends on an account.',
+  inputSchema: { accountId: z.string().min(1), profileId: z.string().uuid() }
+}, async ({ accountId, profileId }) => {
+  try {
+    store.setDefaultSignature(accountId, profileId);
+    return text({ accountId, profileId, status: 'default_set' });
+  } catch (error) {
+    return text({ error: error.message });
+  }
+});
+
+server.registerTool('message_preview', {
+  description: 'Render the exact outgoing text/HTML from new content, the selected or default signature, and an optional quoted source. Use the returned text/html as input to send_approval_create.',
+  inputSchema: {
+    accountId: z.string().min(1),
+    newText: z.string(),
+    newHtml: z.string(),
+    signatureId: z.string().uuid().optional(),
+    quoteText: z.string().optional(),
+    quoteHtml: z.string().optional(),
+    quoteDepth: z.number().int().min(1).max(10).optional()
+  }
+}, async ({ accountId, newText, newHtml, signatureId, quoteText, quoteHtml, quoteDepth }) => {
+  if (!registry.status(accountId)?.enabled) return text({ error: 'account_not_active' });
+  let signature;
+  try {
+    signature = store.resolveSignatureForSend({ accountId, explicitId: signatureId });
+  } catch (error) {
+    return text({ error: error.message });
+  }
+  const composed = composeOutgoingMessage({ newText, newHtml, signature, quoteText, quoteHtml, quoteDepth });
+  return text({ ...composed, signature: signature ? { id: signature.id, name: signature.name, version: signature.version } : null });
 });
 
 server.registerTool('send_approval_create', {

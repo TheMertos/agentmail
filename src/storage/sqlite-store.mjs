@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
+import { sanitizeSignatureHtml } from '../core/signatures.mjs';
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS active_accounts (
@@ -22,6 +23,21 @@ const SCHEMA = `
     updated_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS drafts_account ON drafts(account_id, updated_at);
+  CREATE TABLE IF NOT EXISTS signature_profiles (
+    profile_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    html_body TEXT NOT NULL,
+    text_body TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS signature_profiles_account ON signature_profiles(account_id);
+  CREATE TABLE IF NOT EXISTS signature_defaults (
+    account_id TEXT PRIMARY KEY,
+    profile_id TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS folders (
     account_id TEXT NOT NULL,
     folder_id TEXT NOT NULL,
@@ -100,6 +116,54 @@ export class SqliteMailStore {
 
   listDrafts(accountId) {
     return this.db.prepare('SELECT draft_id FROM drafts WHERE account_id = ? AND status = \'draft\' ORDER BY updated_at DESC').all(accountId).map(({ draft_id: id }) => this.getDraft(id));
+  }
+
+  createSignatureProfile({ accountId, name, html, text }) {
+    if (!accountId || !name) throw new TypeError('accountId and name are required');
+    const id = randomUUID();
+    const safeHtml = sanitizeSignatureHtml(html ?? '');
+    this.db.prepare(`INSERT INTO signature_profiles(profile_id, account_id, name, html_body, text_body, version, enabled, updated_at) VALUES (?, ?, ?, ?, ?, 1, 1, ?)`)
+      .run(id, accountId, name, safeHtml, text ?? '', new Date().toISOString());
+    return this.getSignatureProfile(id);
+  }
+
+  updateSignatureProfile(id, { name, html, text, enabled } = {}) {
+    const current = this.getSignatureProfile(id);
+    if (!current) throw new Error('signature_not_found');
+    const nextVersion = current.version + 1;
+    const safeHtml = html !== undefined ? sanitizeSignatureHtml(html) : current.html;
+    this.db.prepare(`UPDATE signature_profiles SET name = ?, html_body = ?, text_body = ?, version = ?, enabled = ?, updated_at = ? WHERE profile_id = ?`)
+      .run(name ?? current.name, safeHtml, text ?? current.text, nextVersion, enabled === undefined ? (current.enabled ? 1 : 0) : (enabled ? 1 : 0), new Date().toISOString(), id);
+    return this.getSignatureProfile(id);
+  }
+
+  getSignatureProfile(id) {
+    const row = this.db.prepare('SELECT * FROM signature_profiles WHERE profile_id = ?').get(id);
+    return row ? { id: row.profile_id, accountId: row.account_id, name: row.name, html: row.html_body, text: row.text_body, version: row.version, enabled: Boolean(row.enabled) } : null;
+  }
+
+  listSignatureProfiles(accountId) {
+    return this.db.prepare('SELECT profile_id FROM signature_profiles WHERE account_id = ? AND enabled = 1 ORDER BY name').all(accountId).map(({ profile_id: id }) => this.getSignatureProfile(id));
+  }
+
+  setDefaultSignature(accountId, profileId) {
+    const profile = this.getSignatureProfile(profileId);
+    if (!profile || profile.accountId !== accountId) throw new Error('signature belongs to another account');
+    this.db.prepare('INSERT INTO signature_defaults(account_id, profile_id) VALUES (?, ?) ON CONFLICT(account_id) DO UPDATE SET profile_id = excluded.profile_id').run(accountId, profileId);
+  }
+
+  getDefaultSignature(accountId) {
+    const row = this.db.prepare('SELECT profile_id FROM signature_defaults WHERE account_id = ?').get(accountId);
+    return row ? this.getSignatureProfile(row.profile_id) : null;
+  }
+
+  resolveSignatureForSend({ accountId, explicitId }) {
+    if (explicitId) {
+      const profile = this.getSignatureProfile(explicitId);
+      if (profile && profile.accountId !== accountId) throw new Error('signature belongs to another account');
+      return profile && profile.enabled ? profile : null;
+    }
+    return this.getDefaultSignature(accountId);
   }
 
   async upsertFolder(folder) {
