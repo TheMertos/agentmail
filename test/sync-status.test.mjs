@@ -39,6 +39,46 @@ test('buildSyncStatus exposes per-folder progress and checkpoint metadata', () =
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('buildSyncStatus reports not_started when account has no sync checkpoints', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agentmail-status-empty-'));
+  const store = new SqliteMailStore(join(dir, 'mail.db'));
+  store.activateAccount({ id: 'a', email: 'a@example.test', provider: 'imap', secretRef: 'ref' });
+  await store.upsertMessage({
+    accountId: 'a',
+    mailboxId: 'inbox',
+    key: 'a:inbox:v1:1',
+    uid: 1,
+    uidValidity: 'v1',
+    raw: 'Subject: Hi\n\nBody',
+    envelope: { subject: 'Hi' },
+    flags: [],
+    attachments: []
+  });
+  const status = buildSyncStatus(store, 'a');
+  assert.equal(status.accountId, 'a');
+  assert.deepEqual(status.folders, []);
+  assert.equal(status.state, 'not_started');
+  assert.equal(status.downloadedCount, 1);
+  assert.equal(status.remoteCount, null);
+  assert.equal(status.percentage, null);
+  assert.match(status.percentageReason, /checkpoint|remote total/i);
+  store.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('buildSyncStatusAll does not report 100% for accounts without checkpoints', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agentmail-status-all-empty-'));
+  const store = new SqliteMailStore(join(dir, 'mail.db'));
+  store.activateAccount({ id: 'a', email: 'a@example.test', provider: 'imap', secretRef: 'ref-a' });
+  const all = buildSyncStatusAll(store);
+  assert.equal(all.accounts.length, 1);
+  assert.equal(all.accounts[0].percentage, null);
+  assert.equal(all.accounts[0].state, 'not_started');
+  assert.notEqual(all.accounts[0].percentage, 100);
+  store.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('buildSyncStatusAll lists every active account', () => {
   const dir = mkdtempSync(join(tmpdir(), 'agentmail-status-all-'));
   const store = new SqliteMailStore(join(dir, 'mail.db'));

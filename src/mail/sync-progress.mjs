@@ -32,7 +32,20 @@ export function folderSyncProgress(input) {
  * @param {object[]} folders Per-folder progress inputs.
  * @returns {object} Account totals and nullable percentage.
  */
+export const NO_CHECKPOINT_PERCENTAGE_REASON =
+  'no completed sync checkpoint or reliable remote total yet';
+
 export function accountSyncProgress(folders) {
+  if (folders.length === 0) {
+    return {
+      downloadedCount: 0,
+      remoteCount: null,
+      remaining: null,
+      percentage: null,
+      percentageReason: NO_CHECKPOINT_PERCENTAGE_REASON
+    };
+  }
+
   let downloadedCount = 0;
   let remoteCount = 0;
   let unreliableFolder = null;

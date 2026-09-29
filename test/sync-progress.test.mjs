@@ -37,6 +37,14 @@ test('account progress never guesses when any folder lacks a reliable total', ()
   assert.match(progress.percentageReason, /custom/i);
 });
 
+test('account progress never reports 100% when there are no folder checkpoints', () => {
+  const progress = accountSyncProgress([]);
+  assert.equal(progress.downloadedCount, 0);
+  assert.equal(progress.remoteCount, null);
+  assert.equal(progress.percentage, null);
+  assert.match(progress.percentageReason, /checkpoint|remote total/i);
+});
+
 test('account progress aggregates reliable folder totals', () => {
   const progress = accountSyncProgress([
     { folderId: 'inbox', remoteMessages: 100, localCount: 50, uidNext: 101, lastUid: 50, state: 'syncing' },

@@ -1,13 +1,27 @@
-import { accountSyncProgress, folderSyncProgress } from './sync-progress.mjs';
+import { accountSyncProgress, folderSyncProgress, NO_CHECKPOINT_PERCENTAGE_REASON } from './sync-progress.mjs';
 
 /**
  * Build MCP-facing sync status for one account from store checkpoints.
  * @param {import('../storage/sqlite-store.mjs').SqliteMailStore} store Mail store.
  * @param {string} accountId Account identifier.
- * @returns {object|null} Status payload or null when account has no checkpoints.
+ * @returns {object} Status payload for the account.
  */
 export function buildSyncStatus(store, accountId) {
-  const folders = store.listSyncCheckpoints(accountId).map((row) => {
+  const checkpointRows = store.listSyncCheckpoints(accountId);
+  if (checkpointRows.length === 0) {
+    return {
+      accountId,
+      state: 'not_started',
+      folders: [],
+      downloadedCount: store.countMessages(accountId),
+      remoteCount: null,
+      remaining: null,
+      percentage: null,
+      percentageReason: NO_CHECKPOINT_PERCENTAGE_REASON
+    };
+  }
+
+  const folders = checkpointRows.map((row) => {
     const localCount = row.localMessageCount ?? store.countMessagesInMailbox(accountId, row.mailboxId);
     const folderProgress = folderSyncProgress({
       remoteMessages: row.remoteMessages,
