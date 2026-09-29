@@ -1,4 +1,5 @@
 import { syncAccount } from './sync-engine.mjs';
+import { sendAndSaveSent } from './send-service.mjs';
 
 const SENSITIVE = /password|token|secret|private.?key|credential/i;
 
@@ -22,9 +23,9 @@ export class MailService {
     if (!store) throw new Error('mail_store_unavailable');
     if (!this.leaseBroker?.acquire) throw new Error('credential_lease_unavailable');
     if (!this.providerFactory) throw new Error('provider_unavailable');
-    const lease = await this.leaseBroker.acquire({ accountId, purpose: `imap-sync-${mode}`, fields: ['imap'] });
+    const lease = await this.leaseBroker.acquire({ accountId, purpose: 'imap-sync', fields: ['imap'] });
     assertLeaseSafe(lease);
-    const provider = await this.providerFactory({ account, lease, operation: `imap-sync-${mode}` });
+    const provider = await this.providerFactory({ account, lease, operation: 'imap-sync' });
     try {
       return await syncAccount({ accountId, provider, store, mode });
     } finally {
@@ -47,6 +48,30 @@ export class MailService {
     } finally {
       await provider.close?.();
       await this.leaseBroker.release?.(lease);
+    }
+  }
+
+  async sendMime(accountId, mime) {
+    const account = this.accountRegistry?.get(accountId);
+    if (!account) throw new Error('account_not_found');
+    if (!this.leaseBroker?.acquire) throw new Error('credential_lease_unavailable');
+    if (!this.providerFactory) throw new Error('provider_unavailable');
+
+    const smtpLease = await this.leaseBroker.acquire({ accountId, purpose: 'smtp-send', fields: ['smtp'] });
+    assertLeaseSafe(smtpLease);
+    const smtp = await this.providerFactory({ account, lease: smtpLease, operation: 'smtp-send' });
+
+    const imapLease = await this.leaseBroker.acquire({ accountId, purpose: 'imap-sync', fields: ['imap'] });
+    assertLeaseSafe(imapLease);
+    const imap = await this.providerFactory({ account, lease: imapLease, operation: 'imap-sync' });
+
+    try {
+      return await sendAndSaveSent({ accountId, mime, smtp, imap });
+    } finally {
+      await smtp.close?.();
+      await imap.close?.();
+      await this.leaseBroker.release?.(smtpLease);
+      await this.leaseBroker.release?.(imapLease);
     }
   }
 }

@@ -7,6 +7,6 @@ test('runtime configuration is mandatory', () => {
 });
 
 test('runtime configuration validates values', () => {
-  const config = loadConfig({ AGENTMAIL_DB_PATH: '/data/agentmail.db', AGENTMAIL_SYNC_INTERVAL_SECONDS: '300', AGENTMAIL_LOG_LEVEL: 'info', AGENTMAIL_TRANSPORT: 'stdio' });
-  assert.deepEqual(config, { dbPath: '/data/agentmail.db', syncIntervalSeconds: 300, logLevel: 'info', transport: 'stdio' });
+  const config = loadConfig({ AGENTMAIL_DB_PATH: '/data/agentmail.db', AGENTMAIL_SYNC_INTERVAL_SECONDS: '300', AGENTMAIL_LOG_LEVEL: 'info', AGENTMAIL_TRANSPORT: 'stdio', SECRET_FABRIC_URL: 'http://127.0.0.1:3000', SECRET_FABRIC_API_TOKEN: 'tok' });
+  assert.deepEqual(config, { dbPath: '/data/agentmail.db', syncIntervalSeconds: 300, logLevel: 'info', transport: 'stdio', secretFabricUrl: 'http://127.0.0.1:3000', secretFabricApiToken: 'tok' });
 });

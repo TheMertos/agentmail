@@ -12,8 +12,12 @@ services:
       AGENTMAIL_SYNC_INTERVAL_SECONDS: "300"
       AGENTMAIL_LOG_LEVEL: info
       AGENTMAIL_TRANSPORT: stdio
+      SECRET_FABRIC_URL: ${SECRET_FABRIC_URL:?SECRET_FABRIC_URL is required}
+      SECRET_FABRIC_API_TOKEN: ${SECRET_FABRIC_API_TOKEN:?SECRET_FABRIC_API_TOKEN is required}
+    network_mode: "host"
     volumes:
       - agentmail-data:/data
 
 volumes:
   agentmail-data:
+    name: agentmail-data

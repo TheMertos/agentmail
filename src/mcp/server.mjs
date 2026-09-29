@@ -4,6 +4,14 @@ import * as z from 'zod/v4';
 import { loadConfig } from '../config.mjs';
 import { MailService } from '../mail/mail-service.mjs';
 import { SqliteMailStore } from '../storage/sqlite-store.mjs';
+import { createLeaseBroker } from '../security/lease-broker.mjs';
+import { createSecretFabricResolver } from '../security/secretfabric-resolver.mjs';
+import { ImapProvider } from '../mail/imap-provider.mjs';
+import { SmtpProvider } from '../mail/smtp-provider.mjs';
+import { createApproval, verifyApproval } from '../core/approval.mjs';
+
+const IMAP_FIELDS = ['incoming.host', 'incoming.port', 'incoming.security', 'incoming.username', 'incoming.password'];
+const SMTP_FIELDS = ['outgoing.host', 'outgoing.port', 'outgoing.security', 'outgoing.username', 'outgoing.password'];
 
 const config = loadConfig();
 const store = new SqliteMailStore(config.dbPath);
@@ -13,8 +21,29 @@ const registry = {
   status: (id) => { const account = store.getAccount(id); return account ? { id: account.id, email: account.email, provider: account.provider, enabled: account.enabled, hasCredentialReference: true } : null; },
   register: (account) => store.activateAccount(account)
 };
-const mailService = new MailService({ accountRegistry: registry });
+
+const resolveCredentials = createSecretFabricResolver({ baseUrl: config.secretFabricUrl, apiToken: config.secretFabricApiToken });
+const leaseBroker = createLeaseBroker({
+  resolver: ({ accountId, purpose }) => {
+    const account = store.getAccount(accountId);
+    if (!account) throw new Error('account_not_found');
+    const fieldPaths = purpose === 'smtp-send' ? SMTP_FIELDS : IMAP_FIELDS;
+    return resolveCredentials({ resourceId: account.secretRef, purpose, fieldPaths });
+  }
+});
+
+async function providerFactory({ account, lease, operation }) {
+  const credentials = leaseBroker.getPrivate(lease.leaseId);
+  if (!credentials) throw new Error('credential_lease_unavailable');
+  if (operation === 'smtp-send') {
+    return new SmtpProvider({ connection: account.connection?.smtp ?? account.connection, credentials });
+  }
+  return new ImapProvider({ connection: account.connection?.imap ?? account.connection, credentials });
+}
+
+const mailService = new MailService({ accountRegistry: registry, leaseBroker, providerFactory });
 const server = new McpServer({ name: 'agentmail', version: '0.1.0' });
+const pendingApprovals = new Map();
 
 const text = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 
@@ -132,6 +161,48 @@ server.registerTool('mailbox_sync_all', {
     }
   }
   return text({ mode, results });
+});
+
+server.registerTool('send_approval_create', {
+  description: 'Create a short-lived approval bound to the exact reviewed outgoing message. Required before message_send.',
+  inputSchema: {
+    accountId: z.string().min(1),
+    to: z.array(z.string()).min(1),
+    subject: z.string(),
+    text: z.string(),
+    html: z.string(),
+    mime: z.string()
+  }
+}, async ({ accountId, to, subject, text: bodyText, html, mime }) => {
+  if (!registry.status(accountId)?.enabled) return text({ error: 'account_not_active' });
+  const payload = { accountId, to, subject, text: bodyText, html, mime };
+  const approval = createApproval(payload, { ttlSeconds: 300 });
+  pendingApprovals.set(approval.id, { approval, payload });
+  return text(approval);
+});
+
+server.registerTool('message_send', {
+  description: 'Send an approved outgoing MIME message, save it to Sent, and verify the copy. Requires a valid, unexpired send_approval_create result for the exact same payload.',
+  inputSchema: {
+    approvalId: z.string().uuid(),
+    accountId: z.string().min(1),
+    to: z.array(z.string()).min(1),
+    subject: z.string(),
+    text: z.string(),
+    html: z.string(),
+    mime: z.string()
+  }
+}, async ({ approvalId, ...payload }) => {
+  const entry = pendingApprovals.get(approvalId);
+  if (!entry) return text({ error: 'approval_not_found' });
+  const normalizedPayload = { accountId: payload.accountId, to: payload.to, subject: payload.subject, text: payload.text, html: payload.html, mime: payload.mime };
+  if (!verifyApproval(entry.approval, normalizedPayload)) return text({ error: 'approval_invalid_or_expired' });
+  pendingApprovals.delete(approvalId);
+  try {
+    return text(await mailService.sendMime(normalizedPayload.accountId, normalizedPayload.mime));
+  } catch (error) {
+    return text({ error: error.message });
+  }
 });
 
 async function main() {
