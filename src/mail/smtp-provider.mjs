@@ -13,7 +13,14 @@ export class SmtpProvider {
   }
 
   async send(mime) {
-    const result = await this.transporter.sendMail({ raw: mime });
+    const header = (name) => mime.match(new RegExp(`^${name}:\\s*(.+)$`, 'mi'))?.[1]?.trim();
+    const splitAddresses = (value) => (value ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+    const from = header('From');
+    const to = splitAddresses(header('To'));
+    const cc = splitAddresses(header('Cc'));
+    const bcc = splitAddresses(header('Bcc'));
+    if (!from || !to.length) throw new Error('mime_envelope_missing');
+    const result = await this.transporter.sendMail({ raw: mime, envelope: { from, to: [...to, ...cc, ...bcc] } });
     return { accepted: result.accepted ?? [], messageId: result.messageId ?? null };
   }
 
