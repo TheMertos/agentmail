@@ -1,0 +1,19 @@
+services:
+  agentmail:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentmail
+    restart: unless-stopped
+    stdin_open: true
+    tty: false
+    environment:
+      AGENTMAIL_DB_PATH: /data/agentmail.db
+      AGENTMAIL_SYNC_INTERVAL_SECONDS: "300"
+      AGENTMAIL_LOG_LEVEL: info
+      AGENTMAIL_TRANSPORT: stdio
+    volumes:
+      - agentmail-data:/data
+
+volumes:
+  agentmail-data:
