@@ -268,6 +268,8 @@ export class ImapProvider {
       flags: true,
       internalDate: true,
       envelope: true,
+      // ImapFlow maps source:true to BODY.PEEK[]; never use BODY[] here.
+      // Syncing an incoming message must not set the shared server-side \\Seen flag.
       source: true
     }, { uid: true })[Symbol.asyncIterator]();
     try {
@@ -328,6 +330,40 @@ export class ImapProvider {
         query = `${range.startUid}:${range.endUid}`;
       }
       yield* this.#iterateFetch(query, status, mailbox);
+    } finally {
+      this.#release(lock);
+    }
+  }
+
+  /**
+   * Write \\Seen for one UID. This is the only provider method that issues UID STORE +FLAGS \\Seen.
+   * @param {string} mailbox Selected mailbox path.
+   * @param {number|string} uid Message UID.
+   * @param {string|number} uidValidity Expected UIDVALIDITY. STORE is not sent when it differs.
+   * @returns {Promise<true>} True when the server accepted the flag.
+   */
+  async markRead(mailbox, uid, uidValidity) {
+    const numericUid = Number(uid);
+    if (!mailbox || !Number.isInteger(numericUid) || numericUid <= 0 || uidValidity == null || uidValidity === '') {
+      throw new Error('identity_mismatch');
+    }
+    await this.connect();
+    const lock = await this.#deadline(
+      this.client.getMailboxLock(mailbox, { acquireTimeout: this.operationTimeoutMs }),
+      'lock'
+    );
+    try {
+      const status = await this.#deadline(
+        this.client.status(mailbox, { uidValidity: true }),
+        'status'
+      );
+      if (String(status?.uidValidity) !== String(uidValidity)) throw new Error('identity_mismatch');
+      const stored = await this.#deadline(
+        this.client.messageFlagsAdd(String(numericUid), ['\\Seen'], { uid: true }),
+        'store'
+      );
+      if (!stored) throw new Error('mark_read_failed');
+      return true;
     } finally {
       this.#release(lock);
     }

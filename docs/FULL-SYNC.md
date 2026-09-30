@@ -41,7 +41,8 @@ This includes Inbox, Sent, Drafts, Archive, Trash, Spam, custom folders, and pro
 - MCP does not start, enqueue, or wait for mailbox sync. The worker performs IMAP sync on its own interval.
 - `sync_status(accountId)` and `sync_status_all()` return folder counts, checkpoints, errors, and last successful sync from the local mirror; never credentials. They do not download mail.
 - `message_search` searches the local complete mirror and reports whether sync is still incomplete.
-- `message_read` reads from local storage by default; `refresh=true` is explicit.
+- `message_read` reads from local storage by default; `refresh=true` is explicit. It does not set IMAP \Seen.
+- `message_mark_read(messageKey)` is the only MCP operation that writes provider `\Seen`, and only for that exact accessible message.
 
 ## Resource limits
 

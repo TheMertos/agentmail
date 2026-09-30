@@ -15,6 +15,7 @@ test('boundedUidRange returns null when there is nothing left to fetch', () => {
 
 test('fetchMessages issues a bounded UID FETCH range for the first batch promptly', async () => {
   let fetchQuery;
+  let fetchOptions;
   const provider = new ImapProvider({
     connection: { host: 'imap.example', port: 993 },
     credentials: { username: 'u', password: 'p' }
@@ -25,6 +26,7 @@ test('fetchMessages issues a bounded UID FETCH range for the first batch promptl
     status: async () => ({ messages: 50_000, uidValidity: 42, uidNext: 74_001 }),
     fetch: (query, _opts, _fetchOpts) => {
       fetchQuery = query;
+      fetchOptions = _opts;
       return (async function* () {
         yield { uid: 1, flags: [], internalDate: new Date(), envelope: null, source: Buffer.from('a') };
       })();
@@ -41,6 +43,7 @@ test('fetchMessages issues a bounded UID FETCH range for the first batch promptl
   }
 
   assert.equal(fetchQuery, '1:100');
+  assert.equal(fetchOptions.source, true);
   assert.equal(messages.length, 1);
 });
 
@@ -165,4 +168,68 @@ test('getMailboxLock timeout abandons the client instead of waiting', { timeout:
     (error) => error instanceof ImapOperationTimeout
   );
   assert.equal(closed, 1);
+});
+
+/**
+ * Build a connected provider whose client records flag writes.
+ * @param {{ uidValidity?: number, stored?: boolean }} [options]
+ * @returns {{ provider: ImapProvider, calls: object[] }}
+ */
+function providerWithFlagSpy({ uidValidity = 42, stored = true } = {}) {
+  const calls = [];
+  const provider = new ImapProvider({
+    connection: { host: 'imap.example', port: 993 },
+    credentials: { username: 'u', password: 'p' }
+  });
+  provider.client = {
+    connect: async () => {},
+    getMailboxLock: async (path) => {
+      calls.push({ op: 'lock', path });
+      return { release: () => {} };
+    },
+    status: async (path, query) => {
+      calls.push({ op: 'status', path, query });
+      return { uidValidity };
+    },
+    messageFlagsAdd: async (range, flags, options) => {
+      calls.push({ op: 'store', range, flags, options });
+      return stored;
+    },
+    fetch: () => (async function* () {})(),
+    fetchOne: async () => ({ source: Buffer.from('mime') }),
+    search: async () => [1],
+    logout: async () => {},
+    close: async () => {}
+  };
+  provider.connected = true;
+  return { provider, calls };
+}
+
+test('markRead stores +FLAGS \\Seen for one UID only when UIDVALIDITY matches', async () => {
+  const { provider, calls } = providerWithFlagSpy();
+  const ok = await provider.markRead('INBOX', 7, '42');
+  assert.equal(ok, true);
+  assert.deepEqual(calls.filter((call) => call.op === 'store'), [{
+    op: 'store',
+    range: '7',
+    flags: ['\\Seen'],
+    options: { uid: true }
+  }]);
+  assert.equal(calls.filter((call) => call.op === 'lock')[0].path, 'INBOX');
+});
+
+test('markRead does not STORE when mailbox UIDVALIDITY differs', async () => {
+  const { provider, calls } = providerWithFlagSpy({ uidValidity: 99 });
+  await assert.rejects(() => provider.markRead('INBOX', 7, '42'), /identity_mismatch/);
+  assert.equal(calls.some((call) => call.op === 'store'), false);
+});
+
+test('fetch, search, and readByUid never STORE \\Seen', async () => {
+  const { provider, calls } = providerWithFlagSpy();
+  for await (const _message of provider.fetchMessages({ id: 'INBOX', path: 'INBOX' }, { uids: [7] })) {
+    // passive fetch
+  }
+  await provider.searchUids({ path: 'INBOX' });
+  await provider.readByUid('INBOX', 7);
+  assert.equal(calls.some((call) => call.op === 'store'), false);
 });

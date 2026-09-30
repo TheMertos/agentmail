@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createApproval } from '../core/approval.mjs';
 import { composeOutgoingMessage } from '../core/compose-message.mjs';
 import { createAttachmentHandlers, normalizeSendPayload, resolveReplyAttachments } from './attachment-tools.mjs';
+import { resolveReplyTarget } from '../mail/reply-target.mjs';
 
 /**
  * Wrap a JSON tool result.
@@ -81,14 +82,21 @@ function encodeSubject(subject) {
  * @param {string} bodyHtml Exact preview HTML.
  * @returns {string}
  */
-function buildPreviewMime(account, to, subject, bodyText, bodyHtml) {
+function buildPreviewMime(account, to, subject, bodyText, bodyHtml, replyHeaders = null) {
   const boundary = `agentmail_preview_${randomUUID()}`;
-  return [
+  const headers = [
     `From: ${account?.email ?? ''}`,
     `To: ${to.join(', ')}`,
     `Subject: ${encodeSubject(subject)}`,
     'MIME-Version: 1.0',
-    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    ...(replyHeaders?.inReplyTo ? [`In-Reply-To: ${replyHeaders.inReplyTo}`] : []),
+    ...(Array.isArray(replyHeaders?.references) && replyHeaders.references.length
+      ? [`References: ${replyHeaders.references.join(' ')}`]
+      : []),
+    `Content-Type: multipart/alternative; boundary="${boundary}"`
+  ];
+  return [
+    ...headers,
     '',
     `--${boundary}`,
     'Content-Type: text/plain; charset=utf-8',
@@ -127,7 +135,7 @@ export function createPreviewBinding({
    * @param {object} args Preview tool arguments.
    * @returns {Promise<{ content: { type: string, text: string }[] }>}
    */
-  async function messagePreview({ accountId, newText, newHtml, signatureId, quoteText, quoteHtml, quoteDepth, attachments }) {
+  async function messagePreview({ accountId, newText, newHtml, signatureId, quoteText, quoteHtml, quoteDepth, sourceMessageKey, replyMode = 'reply', attachments }) {
     try {
       registry.assertAccountAccess(accountId);
     } catch {
@@ -138,6 +146,14 @@ export function createPreviewBinding({
       signature = store.resolveSignatureForSend({ accountId, explicitId: signatureId });
     } catch (error) {
       return text({ error: error.message });
+    }
+    let replyTarget = null;
+    if (sourceMessageKey) {
+      try {
+        replyTarget = resolveReplyTarget({ store, accountId, sourceMessageKey, mode: replyMode });
+      } catch (error) {
+        return text({ error: error.message });
+      }
     }
     const composed = composeOutgoingMessage({ newText, newHtml, signature, quoteText, quoteHtml, quoteDepth });
     let replyAttachments;
@@ -159,6 +175,11 @@ export function createPreviewBinding({
       signature: signature ? { id: signature.id, name: signature.name, version: signature.version } : null,
       quoteText: quoteText ?? '',
       quoteHtml: quoteHtml ?? '',
+      sourceMessageKey: sourceMessageKey ?? null,
+      replyHeaders: replyTarget ? {
+        inReplyTo: replyTarget.headers.inReplyTo,
+        references: replyTarget.headers.references
+      } : null,
       attachments: replyAttachments,
       expiresAt: now() + previewTtlSeconds
     };
@@ -200,7 +221,7 @@ export function createPreviewBinding({
       subject,
       text: preview.text,
       html: preview.html,
-      mime: buildPreviewMime(registry.get(accountId), to, subject, preview.text, preview.html),
+      mime: buildPreviewMime(registry.get(accountId), to, subject, preview.text, preview.html, preview.replyHeaders),
       attachments: previewAttachments
     });
     // Legacy callers may still provide copied bodies, but they can never replace the preview.

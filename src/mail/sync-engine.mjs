@@ -44,6 +44,21 @@ function isMailboxUpToDate(checkpoint, remote, mode) {
 }
 
 /**
+ * Schedule user-visible folders ahead of broad Gmail label folders.
+ * All Mail can take hours; Sent and INBOX must establish their own checkpoints first.
+ * @param {object} mailbox Listed mailbox.
+ * @returns {number} Lower values run first.
+ */
+function mailboxPriority(mailbox) {
+  const specialUse = String(mailbox.specialUse ?? '').toLowerCase();
+  const path = String(mailbox.path ?? mailbox.id ?? '').toLowerCase();
+  if (specialUse.includes('inbox') || path === 'inbox' || path.endsWith('/inbox')) return 0;
+  if (specialUse.includes('sent') || /sent|gesendet/.test(path)) return 1;
+  if (specialUse.includes('all') || /alle nachrichten|all mail/.test(path)) return 3;
+  return 2;
+}
+
+/**
  * Inclusive UID span for a batch that produced no messages.
  * @param {{ startUid: number, endUid: number }|null} attemptedRange Range reported by the provider.
  * @param {{ startUid: number, endUid: number }|null} plannedRange Range planned from the checkpoint.
@@ -71,7 +86,12 @@ export async function syncAccount({ accountId, provider, store, mode = 'incremen
   let skippedFolders = 0;
   const now = () => new Date().toISOString();
 
-  for (const mailbox of mailboxes) {
+  const scheduledMailboxes = mailboxes
+    .map((mailbox, index) => ({ mailbox, index }))
+    .sort((left, right) => mailboxPriority(left.mailbox) - mailboxPriority(right.mailbox) || left.index - right.index)
+    .map(({ mailbox }) => mailbox);
+
+  for (const mailbox of scheduledMailboxes) {
     if (!isSelectableMailbox(mailbox)) {
       continue;
     }

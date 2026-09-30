@@ -9,6 +9,7 @@ import {
   resolveReplyAttachments,
   stagedAttachmentRefSchema
 } from './attachment-tools.mjs';
+import { createMessageMarkReadHandler, messageMarkReadDescription, messageMarkReadInputSchema } from './message-mark-read-tools.mjs';
 import { createMessageSearchHandler, messageSearchDescription, messageSearchInputSchema } from './message-search-tools.mjs';
 import { createPreviewBinding } from './preview-binding.mjs';
 import { createMessageSendHandler } from './send-preflight.mjs';
@@ -19,6 +20,7 @@ import { createMailRuntime } from '../runtime/mail-runtime.mjs';
 const { store, registry, mailService } = createMailRuntime(loadConfig());
 const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ store, registry });
 const messageSearch = createMessageSearchHandler({ store, registry });
+const messageMarkRead = createMessageMarkReadHandler({ store, registry, mailService });
 const attachmentsApi = createAttachmentHandlers({ store, registry });
 const server = new McpServer({ name: 'agentmail', version: '0.1.0' });
 const pendingApprovals = new Map();
@@ -72,7 +74,7 @@ server.registerTool('message_search', {
 }, async (args) => messageSearch(args));
 
 server.registerTool('message_read', {
-  description: 'Read one complete locally mirrored message by its exact message key.',
+  description: 'Read one complete locally mirrored message by its exact message key. It does not set IMAP \\Seen.',
   inputSchema: { messageKey: z.string().min(1) }
 }, async ({ messageKey }) => {
   const accountId = messageKey.split(':', 1)[0];
@@ -85,6 +87,11 @@ server.registerTool('message_read', {
   const message = store.getMessage(messageKey);
   return text(message ? { ...message, raw: message.raw } : { error: 'source_message_not_found' });
 });
+
+server.registerTool('message_mark_read', {
+  description: messageMarkReadDescription,
+  inputSchema: messageMarkReadInputSchema
+}, async (args) => messageMarkRead(args));
 
 server.registerTool('attachment_upload', {
   description: attachmentUploadDescription,
@@ -244,6 +251,8 @@ server.registerTool('message_preview', {
     quoteText: z.string().optional(),
     quoteHtml: z.string().optional(),
     quoteDepth: z.number().int().min(1).max(10).optional(),
+    sourceMessageKey: z.string().optional(),
+    replyMode: z.enum(['reply', 'reply-all']).optional(),
     attachments: z.array(stagedAttachmentRefSchema).optional()
   }
 }, async (args) => previewBinding.messagePreview(args));

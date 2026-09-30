@@ -83,6 +83,29 @@ test('Gmail Alle Nachrichten stays syncing after one bounded batch below uidNext
   assert.equal(store.countMessagesInMailbox('gmail', GMAIL_ALL_MAIL), 100);
 });
 
+test('priority scheduling syncs Sent and INBOX before a long-running All Mail folder', async () => {
+  const store = memoryStore();
+  const visited = [];
+  const provider = {
+    async listMailboxes() {
+      return [
+        { id: GMAIL_ALL_MAIL, path: GMAIL_ALL_MAIL, specialUse: '\\\\All', messages: 1, uidNext: 2, uidValidity: '1', flags: [] },
+        { id: 'INBOX', path: 'INBOX', specialUse: '\\\\Inbox', messages: 1, uidNext: 2, uidValidity: '2', flags: [] },
+        { id: '[Google Mail]/Gesendet', path: '[Google Mail]/Gesendet', specialUse: '\\\\Sent', messages: 1, uidNext: 2, uidValidity: '3', flags: [] }
+      ];
+    },
+    async *fetchMessages(mailbox) {
+      visited.push(mailbox.id);
+      yield { uid: 1, uidValidity: mailbox.uidValidity, folderId: mailbox.id, raw: `m:${mailbox.id}`, flags: [], attachments: [] };
+    }
+  };
+
+  await syncAccount({ accountId: 'gmail', provider, store, mode: 'full', batchSize: 10 });
+  assert.deepEqual(visited, ['INBOX', '[Google Mail]/Gesendet', GMAIL_ALL_MAIL]);
+  assert.equal((await store.getCheckpoint('gmail', 'INBOX')).status, 'completed');
+  assert.equal((await store.getCheckpoint('gmail', '[Google Mail]/Gesendet')).status, 'completed');
+});
+
 test('sync skips non-selectable Gmail parent and does not checkpoint it', async () => {
   const store = memoryStore();
   const provider = {

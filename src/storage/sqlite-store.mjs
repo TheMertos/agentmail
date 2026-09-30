@@ -601,7 +601,19 @@ export class SqliteMailStore {
   getMessage(key) {
     const row = this.db.prepare('SELECT * FROM messages WHERE message_key = ?').get(key);
     if (!row) return null;
-    return { ...row, raw: row.raw_mime, flags: JSON.parse(row.flags_json), envelope: JSON.parse(row.envelope_json), attachments: JSON.parse(row.attachments_json) };
+    return {
+      key: row.message_key,
+      accountId: row.account_id,
+      mailboxId: row.mailbox_id,
+      uid: row.uid,
+      uidValidity: row.uid_validity,
+      internalDate: row.internal_date,
+      raw: row.raw_mime,
+      flags: JSON.parse(row.flags_json),
+      envelope: JSON.parse(row.envelope_json),
+      attachments: JSON.parse(row.attachments_json),
+      updatedAt: row.updated_at
+    };
   }
 
   getCheckpoint(accountId, mailboxId) {

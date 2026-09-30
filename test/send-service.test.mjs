@@ -29,3 +29,31 @@ test('successful SMTP with failed Sent append reports partial completion and nev
   }), /sent_copy_failed/);
   assert.equal(smtpCalls, 1);
 });
+
+test('accepted SMTP with unverified Sent read-back never claims sent_and_saved', async () => {
+  let smtpCalls = 0;
+  await assert.rejects(() => sendAndSaveSent({
+    accountId: 'info',
+    mime: 'Message-ID: <abc@example.test>\r\n\r\nHello',
+    smtp: { send: async () => { smtpCalls += 1; return { accepted: ['x@example.test'] }; } },
+    imap: {
+      findSentMailbox: async () => 'Sent',
+      append: async () => ({ uid: 77 }),
+      readByUid: async () => { throw new Error('readback_unavailable'); }
+    }
+  }), /sent_copy_unverified/);
+  assert.equal(smtpCalls, 1);
+});
+
+test('Sent append is not enough: the exact normalized MIME must be read back', async () => {
+  await assert.rejects(() => sendAndSaveSent({
+    accountId: 'info',
+    mime: 'Message-ID: <abc@example.test>\n\nHello',
+    smtp: { send: async () => ({ accepted: ['x@example.test'] }) },
+    imap: {
+      findSentMailbox: async () => 'Sent',
+      append: async () => ({ uid: 78 }),
+      readByUid: async () => 'Message-ID: <different@example.test>\r\n\r\nHello'
+    }
+  }), /sent_copy_verification_failed/);
+});
