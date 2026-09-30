@@ -21,7 +21,11 @@ const config = loadConfig();
 const store = new SqliteMailStore(config.dbPath);
 const registry = createPrincipalRegistry(store, config.principal);
 
-const resolveCredentials = createSecretFabricResolver({ baseUrl: config.secretFabricUrl, apiToken: config.secretFabricApiToken });
+const resolveCredentials = createSecretFabricResolver({
+  baseUrl: config.secretFabricUrl,
+  apiToken: config.secretFabricApiToken,
+  principal: config.secretFabricPrincipal
+});
 const leaseBroker = createLeaseBroker({
   resolver: ({ accountId, purpose }) => {
     const account = registry.get(accountId);

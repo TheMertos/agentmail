@@ -1,5 +1,18 @@
-const REQUIRED = ['AGENTMAIL_DB_PATH', 'AGENTMAIL_SYNC_INTERVAL_SECONDS', 'AGENTMAIL_LOG_LEVEL', 'AGENTMAIL_TRANSPORT', 'AGENTMAIL_PRINCIPAL', 'SECRET_FABRIC_URL', 'SECRET_FABRIC_API_TOKEN'];
+const REQUIRED = [
+  'AGENTMAIL_DB_PATH',
+  'AGENTMAIL_SYNC_INTERVAL_SECONDS',
+  'AGENTMAIL_LOG_LEVEL',
+  'AGENTMAIL_TRANSPORT',
+  'AGENTMAIL_PRINCIPAL',
+  'SECRET_FABRIC_PRINCIPAL',
+  'SECRET_FABRIC_URL',
+  'SECRET_FABRIC_API_TOKEN'
+];
 
+/**
+ * Load and validate runtime configuration from environment variables.
+ * @param {Record<string, string|undefined>} [env]
+ */
 export function loadConfig(env = process.env) {
   const missing = REQUIRED.filter((key) => !env[key]?.trim?.());
   if (missing.length) throw new Error(`missing required runtime configuration: ${missing.join(', ')}`);
@@ -9,12 +22,18 @@ export function loadConfig(env = process.env) {
   if (!['debug', 'info', 'warn', 'error'].includes(env.AGENTMAIL_LOG_LEVEL)) throw new Error('AGENTMAIL_LOG_LEVEL is invalid');
   const principal = String(env.AGENTMAIL_PRINCIPAL).trim();
   if (!principal) throw new Error('AGENTMAIL_PRINCIPAL must be a non-empty string');
+  const secretFabricPrincipal = String(env.SECRET_FABRIC_PRINCIPAL).trim();
+  if (!secretFabricPrincipal) throw new Error('SECRET_FABRIC_PRINCIPAL must be a non-empty string');
+  if (principal !== secretFabricPrincipal) {
+    throw new Error('AGENTMAIL_PRINCIPAL must match SECRET_FABRIC_PRINCIPAL');
+  }
   return {
     dbPath: env.AGENTMAIL_DB_PATH,
     syncIntervalSeconds: interval,
     logLevel: env.AGENTMAIL_LOG_LEVEL,
     transport: env.AGENTMAIL_TRANSPORT,
     principal,
+    secretFabricPrincipal,
     secretFabricUrl: env.SECRET_FABRIC_URL,
     secretFabricApiToken: env.SECRET_FABRIC_API_TOKEN
   };

@@ -6,7 +6,7 @@ AgentMail receives credentials only through a trusted in-process/local bridge co
 
 ```text
 Hermes requests account operation
-  -> trusted resolver asks SecretFabric/Hermes vault for scoped fields
+  -> trusted resolver asks SecretFabric/Hermes vault for scoped fields (principal via `x-hermes-principal` from runtime config, never MCP args)
   -> bridge creates a short-lived in-memory lease
   -> AgentMail provider receives credentials only in the trusted process boundary
   -> IMAP/SMTP operation runs
