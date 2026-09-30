@@ -32,3 +32,19 @@ test('signature profile from another account cannot be selected explicitly', () 
   store.close();
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('disabled account default signature resolves to null while enabled info default resolves', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agentmail-sig3-'));
+  const store = new SqliteMailStore(join(dir, 'mail.db'));
+  const gmailProfile = store.createSignatureProfile({ accountId: 'gmail', name: 'Gmail', html: '<p>Gmail</p>', text: 'Gmail' });
+  const infoProfile = store.createSignatureProfile({ accountId: 'info', name: 'Info', html: '<p>Info</p>', text: 'Info' });
+  store.updateSignatureProfile(gmailProfile.id, { enabled: false });
+  store.setDefaultSignature('gmail', gmailProfile.id);
+  store.setDefaultSignature('info', infoProfile.id);
+
+  assert.equal(store.resolveSignatureForSend({ accountId: 'gmail' }), null);
+  assert.equal(store.resolveSignatureForSend({ accountId: 'info' }).id, infoProfile.id);
+
+  store.close();
+  rmSync(dir, { recursive: true, force: true });
+});

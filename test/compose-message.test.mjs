@@ -21,3 +21,44 @@ test('composes without a signature when none is selected', () => {
   assert.equal(result.html.includes('gmail_quote'), true);
   assert.equal(result.text, 'Hi\n\n> old');
 });
+
+test('wraps a raw quote in exactly one canonical reply blockquote', () => {
+  const result = composeOutgoingMessage({
+    newText: 'Reply',
+    newHtml: '<p>Reply</p>',
+    quoteText: 'Original',
+    quoteHtml: '<p><em>Original</em></p>'
+  });
+
+  assert.equal((result.html.match(/<blockquote\b/g) ?? []).length, 1);
+  assert.equal((result.html.match(/class="gmail_quote"/g) ?? []).length, 1);
+  assert.match(result.html, /<em>Original<\/em>/);
+  assert.equal(result.text, 'Reply\n\n> Original');
+});
+
+test('normalizes already wrapped quoteHtml without adding a second quote bar', () => {
+  const result = composeOutgoingMessage({
+    newText: 'Reply',
+    newHtml: '<p>Reply</p>',
+    quoteText: '> Original',
+    quoteHtml: '<blockquote class="gmail_quote"><p>Original</p></blockquote>'
+  });
+
+  assert.equal((result.html.match(/<blockquote\b/g) ?? []).length, 1);
+  assert.equal((result.html.match(/class="gmail_quote"/g) ?? []).length, 1);
+  assert.equal(result.text, 'Reply\n\n> Original');
+});
+
+test('preserves a genuine nested source quote while removing its outer wrapper', () => {
+  const result = composeOutgoingMessage({
+    newText: 'Reply',
+    newHtml: '<p>Reply</p>',
+    quoteText: '> Outer\n>> Inner',
+    quoteHtml: '<blockquote class="gmail_quote"><p>Outer</p><blockquote><p>Inner</p></blockquote></blockquote>'
+  });
+
+  assert.equal((result.html.match(/<blockquote\b/g) ?? []).length, 2);
+  assert.equal((result.html.match(/class="gmail_quote"/g) ?? []).length, 1);
+  assert.match(result.html, /Outer[\s\S]*<blockquote><p>Inner<\/p><\/blockquote>/);
+  assert.equal(result.text, 'Reply\n\n> Outer\n>> Inner');
+});

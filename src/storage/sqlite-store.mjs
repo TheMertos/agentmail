@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
+import { assertSafeMetadata } from '../core/account-registry.mjs';
+import { extractIncomingAttachments, sanitizeIncomingAttachmentMetadata } from '../mail/incoming-mime.mjs';
 import { sanitizeSignatureHtml } from '../core/signatures.mjs';
+import { buildMessageSearchPage, compileMessageSearch, normalizeMessageSearch } from '../mail/message-search.mjs';
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS active_accounts (
@@ -20,10 +23,23 @@ const SCHEMA = `
     headers_json TEXT NOT NULL,
     text_body TEXT NOT NULL,
     html_body TEXT NOT NULL,
+    attachments_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'draft',
     updated_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS drafts_account ON drafts(account_id, updated_at);
+  CREATE TABLE IF NOT EXISTS staged_attachments (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    owner_principal TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    content BLOB NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS staged_attachments_owner ON staged_attachments(account_id, owner_principal);
   CREATE TABLE IF NOT EXISTS signature_profiles (
     profile_id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL,
@@ -89,17 +105,64 @@ const SCHEMA = `
   );
   CREATE UNIQUE INDEX IF NOT EXISTS sync_jobs_account_active ON sync_jobs(account_id)
     WHERE state IN ('queued', 'running');
-  CREATE TABLE IF NOT EXISTS sync_job_runners (
-    account_id TEXT PRIMARY KEY,
-    job_id TEXT NOT NULL,
-    pid INTEGER NOT NULL,
-    updated_at TEXT NOT NULL
-  );
 `;
 
 const ACCOUNT_MIGRATIONS = [
   'ALTER TABLE active_accounts ADD COLUMN owner_principal TEXT'
 ];
+
+const DRAFT_MIGRATIONS = [
+  `ALTER TABLE drafts ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'`
+];
+
+/**
+ * Throw a stable error code with no caller-supplied detail.
+ * @param {string} code Stable error code.
+ * @returns {Error}
+ */
+function codedError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
+}
+
+/**
+ * Reject plaintext credential fields in connection metadata.
+ * @param {object|undefined} connection Non-sensitive connection metadata.
+ */
+function assertRegisterMetadata(connection) {
+  try {
+    assertSafeMetadata(connection ?? {}, 'connection');
+  } catch {
+    throw codedError('account_metadata_rejected');
+  }
+}
+
+/**
+ * Serialize a JSON value with sorted object keys.
+ * @param {unknown} value JSON value.
+ * @returns {string}
+ */
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+/**
+ * Compare identity fields that register must not change.
+ * @param {object} existing Stored account.
+ * @param {object} account Requested account.
+ * @returns {boolean}
+ */
+function sameStoredAccount(existing, account) {
+  return existing.email === account.email
+    && existing.provider === account.provider
+    && existing.secretRef === account.secretRef
+    && stableJson(existing.connection) === stableJson(account.connection ?? {});
+}
 
 const CHECKPOINT_MIGRATIONS = [
   'ALTER TABLE sync_checkpoints ADD COLUMN uid_validity TEXT',
@@ -116,16 +179,19 @@ export class SqliteMailStore {
   constructor(filename = ':memory:') {
     this.db = new Database(filename);
     this.db.pragma('journal_mode = WAL');
+    this.db.pragma('busy_timeout = 5000');
     this.db.exec(SCHEMA);
     for (const sql of ACCOUNT_MIGRATIONS) {
+      try { this.db.exec(sql); } catch { /* column may already exist */ }
+    }
+    for (const sql of DRAFT_MIGRATIONS) {
       try { this.db.exec(sql); } catch { /* column may already exist */ }
     }
     for (const sql of CHECKPOINT_MIGRATIONS) {
       try { this.db.exec(sql); } catch { /* column may already exist */ }
     }
     this.accountInsertStatement = this.db.prepare(`INSERT INTO active_accounts(account_id, email, provider, secret_ref, connection_json, enabled, owner_principal, updated_at) VALUES (@id, @email, @provider, @secretRef, @connection, 1, @ownerPrincipal, @updatedAt)`);
-    this.accountUpdateOwnedStatement = this.db.prepare(`UPDATE active_accounts SET email=@email, provider=@provider, secret_ref=@secretRef, connection_json=@connection, enabled=1, updated_at=@updatedAt WHERE account_id=@id AND owner_principal=@ownerPrincipal`);
-    this.accountClaimLegacyStatement = this.db.prepare(`UPDATE active_accounts SET email=@email, provider=@provider, secret_ref=@secretRef, connection_json=@connection, enabled=1, owner_principal=@ownerPrincipal, updated_at=@updatedAt WHERE account_id=@id AND owner_principal IS NULL`);
+    this.accountClaimLegacyStatement = this.db.prepare(`UPDATE active_accounts SET enabled=1, owner_principal=@ownerPrincipal, updated_at=@updatedAt WHERE account_id=@id AND owner_principal IS NULL AND email=@email AND provider=@provider AND secret_ref=@secretRef AND connection_json=@connection`);
     this.accountDisableStatement = this.db.prepare('UPDATE active_accounts SET enabled = 0, updated_at = @updatedAt WHERE account_id = @id');
     this.upsertFolderStatement = this.db.prepare(`INSERT INTO folders(account_id, folder_id, path, metadata_json) VALUES (@accountId, @id, @path, @metadata) ON CONFLICT(account_id, folder_id) DO UPDATE SET path=excluded.path, metadata_json=excluded.metadata_json`);
     this.upsertMessageStatement = this.db.prepare(`INSERT INTO messages(message_key, account_id, mailbox_id, uid, uid_validity, internal_date, flags_json, envelope_json, raw_mime, attachments_json, updated_at) VALUES (@key, @accountId, @mailboxId, @uid, @uidValidity, @internalDate, @flags, @envelope, @raw, @attachments, @updatedAt) ON CONFLICT(message_key) DO UPDATE SET flags_json=excluded.flags_json, internal_date=excluded.internal_date, envelope_json=excluded.envelope_json, raw_mime=excluded.raw_mime, attachments_json=excluded.attachments_json, updated_at=excluded.updated_at`);
@@ -170,13 +236,17 @@ export class SqliteMailStore {
   }
 
   /**
-   * Register or update an account for the runtime principal; claim legacy NULL-owner rows on explicit register.
+   * Register an account for the runtime principal.
+   * An existing owned row is kept as-is. secretRef, connection, email, and provider changes are rejected.
+   * A legacy NULL-owner row can be claimed only when those fields already match.
    * @param {object} account Account metadata.
    * @param {string} ownerPrincipal Trusted runtime principal.
+   * @returns {object} Stored account, including the opaque secretRef for in-process use.
    */
   activateAccountForPrincipal(account, ownerPrincipal) {
     if (!account?.id || !account.email || !account.provider || !account.secretRef) throw new TypeError('id, email, provider and secretRef are required');
     if (!ownerPrincipal) throw new TypeError('ownerPrincipal is required');
+    assertRegisterMetadata(account.connection);
     const payload = {
       id: account.id,
       email: account.email,
@@ -192,15 +262,15 @@ export class SqliteMailStore {
       return this.getAccountForPrincipal(account.id, ownerPrincipal);
     }
     if (existing.ownerPrincipal === ownerPrincipal) {
-      this.accountUpdateOwnedStatement.run(payload);
+      if (!sameStoredAccount(existing, account)) throw codedError('account_update_rejected');
       return this.getAccountForPrincipal(account.id, ownerPrincipal);
     }
-    if (existing.ownerPrincipal === null) {
+    if (existing.ownerPrincipal === null && sameStoredAccount(existing, account)) {
       const claimed = this.accountClaimLegacyStatement.run(payload);
-      if (claimed.changes === 0) throw new Error('access_denied');
+      if (claimed.changes === 0) throw codedError('access_denied');
       return this.getAccountForPrincipal(account.id, ownerPrincipal);
     }
-    throw new Error('access_denied');
+    throw codedError('access_denied');
   }
 
   getAccountForPrincipal(id, principal) {
@@ -226,16 +296,66 @@ export class SqliteMailStore {
     return this.db.prepare('SELECT * FROM active_accounts WHERE enabled = 1 ORDER BY account_id').all().map((row) => this.#mapAccountRow(row));
   }
 
+  /**
+   * Keep draft attachment metadata without file bytes.
+   * @param {Array<object>} [attachments] Staged attachment metadata.
+   * @returns {Array<{ id: string, filename: string, contentType: string, size: number, sha256: string }>}
+   */
+  #draftAttachmentMeta(attachments = []) {
+    return attachments.map((item) => ({
+      id: item.id,
+      filename: item.filename,
+      contentType: item.contentType,
+      size: item.size,
+      sha256: item.sha256
+    }));
+  }
+
   createDraft(draft) {
     const id = draft.id ?? randomUUID();
-    this.db.prepare(`INSERT INTO drafts(draft_id, account_id, source_message_key, headers_json, text_body, html_body, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?)`)
-      .run(id, draft.accountId, draft.sourceMessageKey ?? null, JSON.stringify(draft.headers ?? {}), draft.text ?? '', draft.html ?? '', new Date().toISOString());
+    this.db.prepare(`INSERT INTO drafts(draft_id, account_id, source_message_key, headers_json, text_body, html_body, attachments_json, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?)`)
+      .run(id, draft.accountId, draft.sourceMessageKey ?? null, JSON.stringify(draft.headers ?? {}), draft.text ?? '', draft.html ?? '', JSON.stringify(this.#draftAttachmentMeta(draft.attachments)), new Date().toISOString());
     return this.getDraft(id);
   }
 
   getDraft(id) {
     const row = this.db.prepare('SELECT * FROM drafts WHERE draft_id = ?').get(id);
-    return row ? { id: row.draft_id, accountId: row.account_id, sourceMessageKey: row.source_message_key, headers: JSON.parse(row.headers_json), text: row.text_body, html: row.html_body, status: row.status, updatedAt: row.updated_at } : null;
+    return row ? { id: row.draft_id, accountId: row.account_id, sourceMessageKey: row.source_message_key, headers: JSON.parse(row.headers_json), text: row.text_body, html: row.html_body, attachments: JSON.parse(row.attachments_json || '[]'), status: row.status, updatedAt: row.updated_at } : null;
+  }
+
+  /**
+   * Store outgoing attachment bytes for one account and principal.
+   * @param {{ accountId: string, ownerPrincipal: string, filename: string, contentType: string, size: number, sha256: string, content: Buffer }} attachment Validated attachment.
+   * @returns {{ id: string, filename: string, contentType: string, size: number, sha256: string }}
+   */
+  stageAttachment(attachment) {
+    if (!attachment?.accountId || !attachment.ownerPrincipal || !attachment.filename || !attachment.contentType || !attachment.sha256 || !Buffer.isBuffer(attachment.content)) {
+      throw new TypeError('staged attachment fields are required');
+    }
+    if (attachment.size !== attachment.content.length) throw new TypeError('attachment size mismatch');
+    const id = randomUUID();
+    this.db.prepare(`INSERT INTO staged_attachments(id, account_id, owner_principal, filename, content_type, size_bytes, sha256, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, attachment.accountId, attachment.ownerPrincipal, attachment.filename, attachment.contentType, attachment.size, attachment.sha256, attachment.content, new Date().toISOString());
+    return { id, filename: attachment.filename, contentType: attachment.contentType, size: attachment.size, sha256: attachment.sha256 };
+  }
+
+  /**
+   * Load staged bytes when they belong to the account and principal.
+   * @param {{ id: string, accountId: string, ownerPrincipal: string }} key Attachment identity.
+   * @returns {{ id: string, accountId: string, filename: string, contentType: string, size: number, sha256: string, content: Buffer }|null}
+   */
+  getStagedAttachment({ id, accountId, ownerPrincipal }) {
+    const row = this.db.prepare('SELECT * FROM staged_attachments WHERE id = ? AND account_id = ? AND owner_principal = ?').get(id, accountId, ownerPrincipal);
+    if (!row) return null;
+    return {
+      id: row.id,
+      accountId: row.account_id,
+      filename: row.filename,
+      contentType: row.content_type,
+      size: row.size_bytes,
+      sha256: row.sha256,
+      content: Buffer.from(row.content)
+    };
   }
 
   listDrafts(accountId) {
@@ -287,7 +407,8 @@ export class SqliteMailStore {
       if (profile && profile.accountId !== accountId) throw new Error('signature belongs to another account');
       return profile && profile.enabled ? profile : null;
     }
-    return this.getDefaultSignature(accountId);
+    const profile = this.getDefaultSignature(accountId);
+    return profile && profile.enabled ? profile : null;
   }
 
   async upsertFolder(folder) {
@@ -305,9 +426,46 @@ export class SqliteMailStore {
       ...message,
       flags: JSON.stringify(message.flags ?? []),
       envelope: JSON.stringify(message.envelope ?? null),
-      attachments: JSON.stringify(message.attachments ?? []),
+      attachments: JSON.stringify(sanitizeIncomingAttachmentMetadata(message.attachments ?? [])),
       updatedAt: new Date().toISOString()
     });
+  }
+
+  /**
+   * Recover metadata for one legacy mirror row without changing its raw MIME.
+   * Only rows with an explicitly empty attachment array are eligible.
+   * @param {string} key Exact message key.
+   * @returns {Promise<boolean>} Whether metadata was persisted.
+   */
+  async backfillMessageAttachments(key) {
+    const row = this.db.prepare('SELECT raw_mime, attachments_json FROM messages WHERE message_key = ?').get(key);
+    if (!row || !row.raw_mime) return false;
+    let attachments;
+    try { attachments = JSON.parse(row.attachments_json ?? '[]'); } catch { return false; }
+    if (!Array.isArray(attachments) || attachments.length !== 0) return false;
+    const extracted = sanitizeIncomingAttachmentMetadata(await extractIncomingAttachments(row.raw_mime));
+    if (extracted.length === 0) return false;
+    const result = this.db.prepare(`UPDATE messages SET attachments_json = ?, updated_at = ?
+      WHERE message_key = ? AND json_valid(attachments_json) AND json_type(attachments_json) = 'array'
+      AND json_array_length(attachments_json) = 0`).run(JSON.stringify(extracted), new Date().toISOString(), key);
+    return result.changes === 1;
+  }
+
+  /**
+   * Bounded maintenance pass for legacy rows with raw MIME and no metadata.
+   * @param {string} accountId Account scope.
+   * @param {number} [limit=50] Maximum rows to inspect.
+   * @returns {Promise<number>} Number of rows updated.
+   */
+  async backfillEmptyMessageAttachments(accountId, limit = 50) {
+    const boundedLimit = Math.max(1, Math.min(200, Number(limit) || 50));
+    const rows = this.db.prepare(`SELECT message_key FROM messages
+      WHERE account_id = ? AND raw_mime IS NOT NULL AND json_valid(attachments_json)
+      AND json_type(attachments_json) = 'array' AND json_array_length(attachments_json) = 0
+      ORDER BY updated_at, message_key LIMIT ?`).all(accountId, boundedLimit);
+    let updated = 0;
+    for (const row of rows) if (await this.backfillMessageAttachments(row.message_key)) updated += 1;
+    return updated;
   }
 
   async checkpoint(checkpoint) {
@@ -329,11 +487,44 @@ export class SqliteMailStore {
     });
   }
 
+  /**
+   * Search mirrored messages for one account.
+   * Positional calls return a message array. A criteria object returns a page envelope.
+   * @param {string|object} accountId Account id, or search criteria.
+   * @param {string} [query] Full-text query for a positional call.
+   * @param {number} [limit=50] Row cap for a positional call.
+   * @returns {object[]|object}
+   */
   searchMessages(accountId, query, limit = 50) {
-    const needle = `%${String(query ?? '').toLowerCase()}%`;
-    return this.db.prepare(`SELECT message_key, account_id, mailbox_id, uid, uid_validity, internal_date, flags_json, envelope_json FROM messages WHERE account_id = ? AND (lower(raw_mime) LIKE ? OR lower(envelope_json) LIKE ?) ORDER BY internal_date DESC LIMIT ?`).all(accountId, needle, needle, Math.min(Math.max(Number(limit) || 50, 1), 200)).map((row) => ({ key: row.message_key, accountId: row.account_id, mailboxId: row.mailbox_id, uid: row.uid, uidValidity: row.uid_validity, internalDate: row.internal_date, flags: JSON.parse(row.flags_json), envelope: JSON.parse(row.envelope_json) }));
+    if (accountId && typeof accountId === 'object') return this.#runMessageSearch(accountId);
+    return this.#runMessageSearch({
+      accountId,
+      query: query == null ? '' : String(query),
+      limit
+    }, { legacyLimit: true }).items;
   }
 
+  /**
+   * Execute a parameterized account-scoped message search.
+   * @param {object} criteria Search criteria. Extra fields are ignored.
+   * @param {{ legacyLimit?: boolean }} [options] Clamp limits for the positional API.
+   * @returns {object} Page envelope.
+   */
+  #runMessageSearch(criteria, options = {}) {
+    const normalized = normalizeMessageSearch(criteria, options);
+    const compiled = compileMessageSearch(normalized);
+    const rows = this.db.prepare(compiled.listSql).all(...compiled.listParams);
+    const total = this.db.prepare(compiled.countSql).get(...compiled.countParams).total;
+    return buildMessageSearchPage({ rows, total, normalized });
+  }
+
+  /**
+   * List messages in one mailbox, preserving the historical array result.
+   * @param {string} accountId Account id.
+   * @param {string} [mailboxId] Mailbox id. Empty returns the bounded account search.
+   * @param {number} [limit=50] Positional search limit applied before the mailbox filter.
+   * @returns {object[]}
+   */
   listMessages(accountId, mailboxId, limit = 50) {
     return this.searchMessages(accountId, '', limit).filter((message) => !mailboxId || message.mailboxId === mailboxId);
   }
@@ -344,6 +535,18 @@ export class SqliteMailStore {
 
   countMessagesInMailbox(accountId, mailboxId) {
     return this.db.prepare('SELECT COUNT(*) AS count FROM messages WHERE account_id = ? AND mailbox_id = ?').get(accountId, mailboxId).count;
+  }
+
+  /**
+   * UIDs already stored for one mailbox, in ascending order.
+   * @param {string} accountId Account id.
+   * @param {string} mailboxId Mailbox id.
+   * @returns {number[]} Stored UIDs. Resume uses this set so those messages are not fetched again.
+   */
+  listMessageUids(accountId, mailboxId) {
+    return this.db.prepare(
+      'SELECT uid FROM messages WHERE account_id = ? AND mailbox_id = ? ORDER BY uid'
+    ).all(accountId, mailboxId).map((row) => row.uid);
   }
 
   clearMailboxMessages(accountId, mailboxId) {
@@ -467,40 +670,13 @@ export class SqliteMailStore {
   }
 
   /**
-   * Claim exclusive sync execution for an account across MCP processes.
-   * @param {{ accountId: string, jobId: string, pid: number, isProcessAlive: (pid: number) => boolean }} claim
-   * @returns {boolean} True when this pid may run the job.
+   * Load one sync job by id.
+   * @param {string} jobId Job id.
+   * @returns {object|null} Normalized job or null.
    */
-  tryAcquireSyncJobRunner({ accountId, jobId, pid, isProcessAlive }) {
-    const now = new Date().toISOString();
-    const claim = this.db.transaction(() => {
-      const existing = this.db.prepare(
-        'SELECT account_id, job_id, pid FROM sync_job_runners WHERE account_id = ?'
-      ).get(accountId);
-      if (!existing) {
-        this.db.prepare(
-          'INSERT INTO sync_job_runners(account_id, job_id, pid, updated_at) VALUES (?, ?, ?, ?)'
-        ).run(accountId, jobId, pid, now);
-        return true;
-      }
-      if (existing.job_id === jobId && existing.pid === pid) return true;
-      if (isProcessAlive(existing.pid)) return false;
-      this.db.prepare(
-        'UPDATE sync_job_runners SET job_id = ?, pid = ?, updated_at = ? WHERE account_id = ?'
-      ).run(jobId, pid, now, accountId);
-      return true;
-    });
-    return claim();
-  }
-
-  /**
-   * Release sync runner claim after job completion or failure.
-   * @param {{ accountId: string, jobId: string, pid: number }} release
-   */
-  releaseSyncJobRunner({ accountId, jobId, pid }) {
-    this.db.prepare(
-      'DELETE FROM sync_job_runners WHERE account_id = ? AND job_id = ? AND pid = ?'
-    ).run(accountId, jobId, pid);
+  getSyncJobById(jobId) {
+    const row = this.db.prepare('SELECT * FROM sync_jobs WHERE job_id = ?').get(jobId);
+    return row ? this.#mapSyncJobRow(row) : null;
   }
 
   #mapSyncJobRow(row) {

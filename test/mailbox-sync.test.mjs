@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isSelectableMailbox, isMailboxSyncComplete } from '../src/mail/mailbox-sync.mjs';
+import { isSelectableMailbox, isMailboxSyncComplete, reconcileMailboxCompletion } from '../src/mail/mailbox-sync.mjs';
 
 test('isSelectableMailbox rejects IMAP Noselect mailboxes', () => {
   assert.equal(isSelectableMailbox({ path: '[Google Mail]', flags: ['\\Noselect'] }), false);
@@ -73,6 +73,53 @@ test('isMailboxSyncComplete sparse UIDs: lastUid at uidNext-1 does not complete 
     }),
     true
   );
+});
+
+test('reconcileMailboxCompletion keeps a UID-complete mailbox incomplete when EXISTS still exceeds the local count', () => {
+  const result = reconcileMailboxCompletion({
+    lastUid: 108_245,
+    uidNext: 108_245,
+    remoteMessages: 77_268,
+    localMessageCount: 6010
+  });
+  assert.equal(result.complete, false);
+  assert.equal(result.remoteMessages, 77_268);
+  assert.equal(result.remaining, 71_258);
+});
+
+test('reconcileMailboxCompletion uses the verified UID set when Gmail EXISTS over-counts gaps', () => {
+  const result = reconcileMailboxCompletion({
+    lastUid: 108_270,
+    uidNext: 108_271,
+    remoteMessages: 77_292,
+    localMessageCount: 6033,
+    verifiedUidCount: 6033
+  });
+  assert.equal(result.complete, true);
+  assert.equal(result.remoteMessages, 6033);
+  assert.equal(result.remaining, 0);
+});
+
+test('reconcileMailboxCompletion remaining follows missing verified UIDs, not an inflated EXISTS', () => {
+  const inbox = reconcileMailboxCompletion({
+    lastUid: 82_003,
+    uidNext: 82_004,
+    remoteMessages: 74_151,
+    localMessageCount: 28_430,
+    verifiedUidCount: 28_431
+  });
+  assert.equal(inbox.complete, false);
+  assert.equal(inbox.remaining, 1);
+  assert.equal(inbox.remoteMessages, 28_431);
+
+  const allMail = reconcileMailboxCompletion({
+    lastUid: 10,
+    uidNext: 108_271,
+    remoteMessages: 77_292,
+    localMessageCount: 10
+  });
+  assert.equal(allMail.complete, false);
+  assert.equal(allMail.remaining, 77_282);
 });
 
 test('isMailboxSyncComplete uses count-only when uidNext is missing', () => {

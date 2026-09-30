@@ -51,21 +51,65 @@ export class SyncJobRegistry {
   }
 
   /**
+   * Apply a persisted job row onto the cache.
+   * The same job id refreshes fields in place. A new job id becomes the account's cached job
+   * so enqueue and status follow SQLite instead of a stale in-memory row.
+   * @param {SyncJobRecord} job Persisted job row.
+   * @returns {SyncJobRecord} Cached record for that job id.
+   */
+  noteExternal(job) {
+    const incoming = {
+      jobId: job.jobId,
+      accountId: job.accountId,
+      mode: job.mode,
+      state: job.state,
+      startedAt: job.startedAt ?? null,
+      completedAt: job.completedAt ?? null,
+      error: job.error ?? null
+    };
+    const existing = this.byJobId.get(incoming.jobId);
+    if (existing) {
+      existing.accountId = incoming.accountId;
+      existing.mode = incoming.mode;
+      existing.state = incoming.state;
+      existing.startedAt = incoming.startedAt;
+      existing.completedAt = incoming.completedAt;
+      existing.error = incoming.error;
+      const current = this.byAccount.get(incoming.accountId);
+      if (!current || current.jobId === existing.jobId) this.byAccount.set(incoming.accountId, existing);
+      return existing;
+    }
+    this.byAccount.set(incoming.accountId, incoming);
+    this.byJobId.set(incoming.jobId, incoming);
+    return incoming;
+  }
+
+  /**
+   * @param {string} jobId Job id.
+   * @returns {SyncJobRecord|null} Live cache record or null.
+   */
+  getByJobId(jobId) {
+    return this.byJobId.get(jobId) ?? null;
+  }
+
+  /**
    * @param {string} accountId
    * @param {{ mode: string }} options
    * @returns {ReturnType<SyncJobRegistry['#toPublic']>}
    */
   enqueue(accountId, { mode }) {
-    const active = this.byAccount.get(accountId);
-    if (active && (active.state === 'queued' || active.state === 'running')) {
-      return this.#toPublic(active, true);
-    }
-
-    const persisted = this.store?.getActiveSyncJobForAccount(accountId);
-    if (persisted) {
-      this.byAccount.set(accountId, { ...persisted });
-      this.byJobId.set(persisted.jobId, { ...persisted });
-      return this.#toPublic(persisted, true);
+    if (this.store) {
+      const persisted = this.store.getActiveSyncJobForAccount(accountId);
+      if (persisted) return this.#toPublic(this.noteExternal(persisted), true);
+      const cached = this.byAccount.get(accountId);
+      if (cached && (cached.state === 'queued' || cached.state === 'running')) {
+        this.byAccount.delete(accountId);
+      }
+    } else {
+      const active = this.byAccount.get(accountId);
+      if (active && (active.state === 'queued' || active.state === 'running')) {
+        return this.#toPublic(active, true);
+      }
     }
 
     const job = {
@@ -132,6 +176,10 @@ export class SyncJobRegistry {
    * @returns {ReturnType<SyncJobRegistry['#toPublic']>|null}
    */
   getForAccount(accountId) {
+    if (this.store?.getLatestSyncJob) {
+      const latest = this.store.getLatestSyncJob(accountId);
+      if (latest) return this.#toPublic(this.noteExternal(latest));
+    }
     const job = this.byAccount.get(accountId);
     return job ? this.#toPublic(job) : null;
   }
@@ -144,10 +192,7 @@ export class SyncJobRegistry {
     if (!this.store) return [];
     const active = [];
     for (const row of this.store.listInterruptedSyncJobs()) {
-      const job = { ...row };
-      this.byAccount.set(job.accountId, job);
-      this.byJobId.set(job.jobId, job);
-      active.push(job);
+      active.push(this.noteExternal(row));
     }
     return active;
   }

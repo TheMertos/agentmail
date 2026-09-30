@@ -76,7 +76,7 @@ Make email operations reliable instead of improvisational:
 - **Persistence:** PostgreSQL for shared deployments; SQLite-compatible local storage for single-agent deployments.
 - **Credential control plane:** Hermes/SecretFabric handles account onboarding and short-lived credential leases; AgentMail remains unaware of SecretFabric and never stores credentials.
 - **Optional UI:** separate debug/admin package, never required for mail operations.
-- **Deployment:** Docker Compose; production image runs as a non-root MCP process.
+- **Deployment:** Docker Compose; the production container's long-lived process is the non-root sync worker. MCP attaches with a short-lived stdio `docker exec`.
 
 ## First vertical slice
 
@@ -98,13 +98,17 @@ Make email operations reliable instead of improvisational:
 
 ## Development status
 
-AgentMail is a real email client first and an AI assistant second. The Thunderbird-parity requirements are tracked in [`docs/THUNDERBIRD-PARITY.md`](docs/THUNDERBIRD-PARITY.md). The headless MCP server supports resumable folder sync (`mailbox_sync`), progress inspection (`sync_status`, `sync_status_all`), local search/read, drafts, signatures, and approval-gated send.
+AgentMail is a real email client first and an AI assistant second. The Thunderbird-parity requirements are tracked in [`docs/THUNDERBIRD-PARITY.md`](docs/THUNDERBIRD-PARITY.md). Background mailbox sync runs only in the long-lived worker, on its own interval and via a dedicated Inbox IDLE watcher, through that process's account registry, mailbox policy, mail service, and SecretFabric leases. MCP does not enqueue, start, or wait for sync. `sync_status` and `sync_status_all` only read local progress. The headless MCP server also supports local search/read, drafts, signatures, staged outgoing attachments, and approval-gated send. `attachment_upload` accepts base64 content only; draft, preview, and send bind filename, content type, size, and sha256, and a changed attachment invalidates the approval. Source attachments are not inherited by reply.
 
 Resumable sync behavior is specified in [`docs/SPEC.md`](docs/SPEC.md) and summarized in [`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).
 
 See [`docs/PRODUCT.md`](docs/PRODUCT.md) for scope, threat model, and acceptance criteria.
 
 Credentials are brokered through the existing SecretFabric installation. AgentMail can create a one-time claim, let the human enter the sensitive values, and request only short-lived, purpose- and field-scoped in-memory leases for IMAP/SMTP operations. It never exposes credentials to the AI model, chat, logs, or normal application storage. HTML signatures are separate account-scoped profiles with plain-text fallbacks and preview-bound approval. See [`docs/SECRETS.md`](docs/SECRETS.md) and [`docs/SIGNATURES.md`](docs/SIGNATURES.md).
+
+## MCP security contract
+
+The Hermes MCP wrapper derives the runtime principal only from inherited `HERMES_HOME` and injects it as `AGENTMAIL_PRINCIPAL`. MCP tool arguments cannot choose or impersonate that principal. Host paths are rejected by `attachment_upload` and are never read; the tool returns metadata only (id, filename, content type, size, sha256). Approval is required before `message_send`. mail_account_register does not overwrite an existing account, `secretRef`, or connection; there is no silent migration of those fields.
 
 ## License
 

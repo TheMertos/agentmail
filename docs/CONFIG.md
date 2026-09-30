@@ -37,6 +37,8 @@ Hermes should start AgentMail MCP through `tools/hermes-agentmail-mcp.sh`, not b
 
 Derived names must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`. There is no fallback to OS usernames, `HERMES_INSTANCE_NAME`, or MCP tool arguments.
 
+MCP security contract: the principal comes from `HERMES_HOME`. Host paths are rejected and never read. `attachment_upload` returns metadata only. Approval is required before `message_send`. mail_account_register does not overwrite an existing account, secretRef, or connection.
+
 On success it resolves the target container as `agentmail-<principal>` (for example `agentmail-mert` or `agentmail-default`). There is no shared fallback container name. If that container does not exist on the host, the wrapper exits with a clear error and does not attach MCP.
 
 ```text

@@ -34,13 +34,19 @@ Exclusions must be explicit and visible in `sync_policy_get`. Spam or Trash may 
 ## Worker behavior
 
 - Runs as the long-lived Docker container process (`src/worker/sync-runtime-worker.mjs`), scoped by `AGENTMAIL_PROFILE` to the provisioned principal.
-- MCP `docker exec` sessions are short-lived stdio attachments only; exiting MCP does not stop the sync worker.
-- On startup and each sync cycle, resumes queued/running jobs left by a dead MCP process via SQLite job/runner state.
-- Uses a per-account lock so two syncs cannot overlap.
-- Runs incremental sync on the configured interval.
+- MCP `docker exec` sessions are short-lived stdio attachments only. They do not enqueue sync work, and exiting MCP does not stop or hand off the sync worker.
+- The worker's scheduler lists accounts from its own registry, applies mailbox policy, and calls `mailService.syncAccount`.
+- `mailService` resolves a SecretFabric IMAP lease for that account's `secretRef` inside the worker process and downloads mail.
+- The sync interval only receives mail. It does not send.
+- Runs incremental sync on the configured interval (default 300 seconds), including the first cycle at startup. That interval stays in place when IDLE is unavailable.
+- For each enabled account, the worker also opens one dedicated Inbox IDLE connection. That connection is not the sync client. `EXISTS` and `EXPUNGE` schedule one incremental sync after a short debounce.
+- Each account has one sync lock, so the interval cycle and an IDLE wake cannot sync that account at the same time.
+- IDLE credentials come from a separate SecretFabric lease (`imap-idle`). Closing the watcher logs out the provider and releases that lease.
+- A dropped or timed-out IDLE socket reconnects with exponential backoff. After the attempt budget is spent, that watcher stops and the interval scheduler continues.
+- Uses the worker's in-process overlap guard so two sync cycles cannot run at once.
 - Runs a full sync when a policy is created, `UIDVALIDITY` changes, or a checkpoint is invalid.
 - Retries provider failures with exponential backoff.
-- Exposes status, last successful sync, current folder, counts, and errors through MCP.
+- MCP `sync_status` and `sync_status_all` read local checkpoint progress. They do not start a sync.
 - Never blocks message reading while another account is syncing.
 - Never sends mail as part of synchronization.
 
@@ -49,9 +55,8 @@ Exclusions must be explicit and visible in `sync_policy_get`. Spam or Trash may 
 ```text
 sync_policy_get(accountId)
 sync_policy_set(accountId, policy)
-mailbox_sync(accountId, mode)
-mailbox_sync_all(mode)
 sync_status(accountId)
+sync_status_all()
 ```
 
 `sync_policy_set` validates patterns and rejects a policy that would silently exclude all folders. Every policy change is audited.

@@ -36,3 +36,28 @@ export function isMailboxSyncComplete({ lastUid, uidNext, remoteMessages, localM
   if (countComplete !== null) return countComplete;
   return false;
 }
+
+/**
+ * Resolve STATUS EXISTS against the UID set for one mailbox.
+ * A verified UID search replaces an inflated remote total. Without that search,
+ * reaching uidNext does not complete the mailbox while local mail is still short of EXISTS.
+ * Each mailbox, including Gmail labels and All Mail, is reconciled on its own UID space.
+ * @param {object} input lastUid, uidNext, remoteMessages, localMessageCount, optional verifiedUidCount.
+ * @returns {{ remoteMessages: number|null, complete: boolean, remaining: number|null }} Completion and counts.
+ */
+export function reconcileMailboxCompletion({ lastUid, uidNext, remoteMessages, localMessageCount, verifiedUidCount }) {
+  const remote = verifiedUidCount != null
+    ? Number(verifiedUidCount)
+    : (remoteMessages != null ? Number(remoteMessages) : null);
+  const local = localMessageCount != null ? Number(localMessageCount) : null;
+  const complete = isMailboxSyncComplete({
+    lastUid,
+    uidNext,
+    remoteMessages: remote,
+    localMessageCount: local
+  });
+  const remaining = remote == null || local == null || Number.isNaN(remote) || Number.isNaN(local)
+    ? null
+    : Math.max(0, remote - local);
+  return { remoteMessages: remote, complete, remaining };
+}

@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# MCP security contract:
+# The principal is derived only from inherited HERMES_HOME.
+# Host paths are rejected by attachment upload and are never read.
+# attachment_upload returns metadata only.
+# Approval is required before message_send.
+# mail_account_register does not overwrite an existing account, secretRef, or connection.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

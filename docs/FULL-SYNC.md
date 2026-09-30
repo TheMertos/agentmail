@@ -24,8 +24,7 @@ This includes Inbox, Sent, Drafts, Archive, Trash, Spam, custom folders, and pro
 - **Initial sync:** enumerate all folders, then fetch every message and its complete MIME content in bounded batches.
 - **Incremental sync:** use CONDSTORE/QRESYNC/MODSEQ when available; otherwise fetch by UID ranges and compare flags.
 - **Recovery sync:** detect UIDVALIDITY changes, invalidate only the affected folder mapping, and rebuild it safely.
-- **Scheduled sync:** run per account with backoff and provider-friendly concurrency.
-- **On-demand sync:** expose a bounded or complete sync operation through MCP.
+- **Scheduled sync:** the long-lived worker runs per account with backoff and provider-friendly concurrency.
 
 ## Local durability
 
@@ -39,11 +38,10 @@ This includes Inbox, Sent, Drafts, Archive, Trash, Spam, custom folders, and pro
 
 ## MCP behavior
 
-- `mailbox_sync(accountId, mode="full"|"incremental")` starts or resumes sync.
-- `mailbox_sync_status(accountId)` returns folder counts, checkpoints, errors, and last successful sync; never credentials.
+- MCP does not start, enqueue, or wait for mailbox sync. The worker performs IMAP sync on its own interval.
+- `sync_status(accountId)` and `sync_status_all()` return folder counts, checkpoints, errors, and last successful sync from the local mirror; never credentials. They do not download mail.
 - `message_search` searches the local complete mirror and reports whether sync is still incomplete.
 - `message_read` reads from local storage by default; `refresh=true` is explicit.
-- Full sync is a potentially long-running operation and must return a job ID, not block an MCP request indefinitely.
 
 ## Resource limits
 

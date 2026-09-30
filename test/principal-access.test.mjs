@@ -27,6 +27,16 @@ test('legacy account without owner is invisible until claimed by the current pri
   rmSync(dir, { recursive: true, force: true });
 });
 
+/**
+ * Read the persisted account row, including fields the public register result hides.
+ * @param {SqliteMailStore} store Mail store.
+ * @param {string} accountId Account id.
+ * @returns {object|undefined}
+ */
+function accountRow(store, accountId) {
+  return store.db.prepare('SELECT secret_ref, connection_json, enabled, owner_principal, updated_at FROM active_accounts WHERE account_id = ?').get(accountId);
+}
+
 test('cross-principal cannot see or register over an owned account', () => {
   const dir = mkdtempSync(join(tmpdir(), 'agentmail-principal-'));
   const store = new SqliteMailStore(join(dir, 'mail.db'));
@@ -34,7 +44,56 @@ test('cross-principal cannot see or register over an owned account', () => {
   mert.register(ACCOUNT);
   const other = createPrincipalRegistry(store, 'other-user');
   assert.equal(other.status('gmail'), null);
+  const before = accountRow(store, 'gmail');
+  assert.throws(() => other.register({
+    ...ACCOUNT,
+    secretRef: 'stolen-ref',
+    connection: { host: 'evil.example' }
+  }), /access_denied/);
   assert.throws(() => other.register(ACCOUNT), /access_denied/);
+  assert.deepEqual(accountRow(store, 'gmail'), before);
+  assert.equal(store.getAccount('gmail').secretRef, 'resource-gmail');
+  assert.deepEqual(store.getAccount('gmail').connection, { host: 'imap.gmail.com' });
+  store.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('mail_account_register refuses to overwrite secretRef or connection for the same principal', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agentmail-principal-'));
+  const store = new SqliteMailStore(join(dir, 'mail.db'));
+  const mert = createPrincipalRegistry(store, 'mert');
+  const registered = mert.register(ACCOUNT);
+  assert.equal(registered.secretRef, undefined);
+  assert.equal(registered.ownerPrincipal, undefined);
+  assert.equal(JSON.stringify(registered).includes('resource-gmail'), false);
+  assert.equal(registered.hasCredentialReference, true);
+  const before = accountRow(store, 'gmail');
+  assert.throws(() => mert.register({ ...ACCOUNT, secretRef: 'replacement-ref' }), /account_update_rejected/);
+  assert.throws(() => mert.register({ ...ACCOUNT, connection: { host: 'imap.other.test' } }), /account_update_rejected/);
+  assert.throws(() => mert.register({ ...ACCOUNT, email: 'other@example.test' }), /account_update_rejected/);
+  assert.deepEqual(accountRow(store, 'gmail'), before);
+  const again = mert.register(ACCOUNT);
+  assert.equal(again.id, 'gmail');
+  assert.deepEqual(accountRow(store, 'gmail'), before);
+  store.deactivateAccount('gmail');
+  const disabled = accountRow(store, 'gmail');
+  mert.register(ACCOUNT);
+  assert.deepEqual(accountRow(store, 'gmail'), disabled);
+  store.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('mail_account_register rejects plaintext connection secrets and does not store them', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agentmail-principal-'));
+  const store = new SqliteMailStore(join(dir, 'mail.db'));
+  const mert = createPrincipalRegistry(store, 'mert');
+  const password = 'hunter2-register-secret';
+  assert.throws(() => mert.register({
+    ...ACCOUNT,
+    connection: { host: 'imap.gmail.com', password }
+  }), /account_metadata_rejected/);
+  assert.equal(store.getAccount('gmail'), null);
+  assert.equal(JSON.stringify(store.listActiveAccounts()).includes(password), false);
   store.close();
   rmSync(dir, { recursive: true, force: true });
 });

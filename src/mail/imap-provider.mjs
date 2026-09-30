@@ -1,5 +1,9 @@
 import { ImapFlow } from 'imapflow';
 import { isSelectableMailbox } from './mailbox-sync.mjs';
+import { extractIncomingAttachments } from './incoming-mime.mjs';
+
+/** Default deadline for one IMAP lock, status, search, or fetch step. */
+export const DEFAULT_IMAP_OPERATION_TIMEOUT_MS = 120_000;
 
 /**
  * Compute inclusive UID range for one bounded fetch batch.
@@ -15,29 +19,146 @@ export function boundedUidRange(startUid, batchSize, uidNext) {
   return { startUid, endUid };
 }
 
+/**
+ * Raised when an IMAP lock, status, search, or fetch step exceeds its deadline.
+ */
+export class ImapOperationTimeout extends Error {
+  /**
+   * @param {string} operation Step that stalled.
+   */
+  constructor(operation) {
+    super(`imap_${operation}_timeout`);
+    this.name = 'ImapOperationTimeout';
+    this.code = 'ImapOperationTimeout';
+    this.operation = operation;
+  }
+}
+
 export class ImapProvider {
-  constructor({ connection, credentials }) {
+  /**
+   * @param {object} options connection, credentials, optional operationTimeoutMs.
+   */
+  constructor({ connection, credentials, operationTimeoutMs = DEFAULT_IMAP_OPERATION_TIMEOUT_MS }) {
     if (!connection?.host || !connection?.port || !credentials?.username) throw new TypeError('IMAP connection and trusted credentials are required');
-    this.client = new ImapFlow({
-      host: connection.host,
-      port: connection.port,
-      secure: connection.security !== 'starttls',
-      auth: { user: credentials.username, pass: credentials.password }
-    });
+    this.connection = connection;
+    this.credentials = credentials;
+    this.operationTimeoutMs = Number(operationTimeoutMs) > 0 ? Number(operationTimeoutMs) : DEFAULT_IMAP_OPERATION_TIMEOUT_MS;
+    this.client = this.#buildClient();
     this.connected = false;
   }
 
+  /**
+   * Open a new ImapFlow client. Used for the first connection and after a stall.
+   * @returns {ImapFlow} Unconnected client.
+   */
+  #buildClient() {
+    return new ImapFlow({
+      host: this.connection.host,
+      port: this.connection.port,
+      secure: this.connection.security !== 'starttls',
+      auth: { user: this.credentials.username, pass: this.credentials.password },
+      socketTimeout: this.operationTimeoutMs,
+      connectionTimeout: this.operationTimeoutMs,
+      greetingTimeout: Math.min(30_000, this.operationTimeoutMs),
+      disableAutoIdle: true
+    });
+  }
+
+  /**
+   * Drop the current client so the next call reconnects.
+   * A stalled command is closed here; otherwise the worker keeps waiting on it.
+   */
+  #abandon() {
+    const previous = this.client;
+    this.connected = false;
+    try {
+      previous?.close?.();
+    } catch {
+      // The socket may already be gone.
+    }
+    this.client = this.#buildClient();
+  }
+
+  /**
+   * Release a mailbox lock after close without throwing.
+   * @param {{ release?: () => void }|undefined} lock Mailbox lock.
+   */
+  #release(lock) {
+    try {
+      lock?.release?.();
+    } catch {
+      // close() already rejected the lock.
+    }
+  }
+
+  /**
+   * Await one IMAP step and abandon the connection when the deadline passes.
+   * @param {Promise<unknown>} promise In-flight IMAP call.
+   * @param {string} operation Step name used in the timeout error.
+   * @returns {Promise<unknown>} The step result.
+   */
+  async #deadline(promise, operation) {
+    let timer;
+    const pending = Promise.resolve(promise);
+    pending.catch(() => {});
+    try {
+      return await new Promise((resolve, reject) => {
+        timer = setTimeout(() => reject(new ImapOperationTimeout(operation)), this.operationTimeoutMs);
+        pending.then(
+          (value) => resolve(value),
+          (error) => reject(error)
+        );
+      });
+    } catch (error) {
+      if (error instanceof ImapOperationTimeout || error?.code === 'LockTimeout') {
+        this.#abandon();
+        if (error instanceof ImapOperationTimeout) throw error;
+        throw new ImapOperationTimeout(operation);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Connect, replacing the client after a previous stall.
+   * @returns {Promise<ImapProvider>} This provider.
+   */
   async connect() {
     if (!this.connected) {
-      await this.client.connect();
+      await this.#deadline(this.client.connect(), 'connect');
       this.connected = true;
     }
     return this;
   }
 
+  /**
+   * STATUS one mailbox, retrying once after a timeout reconnects.
+   * @param {string} path Mailbox path.
+   * @returns {Promise<object|null>} Status fields, or null when the server rejects the mailbox.
+   */
+  async #mailboxStatus(path) {
+    const query = { messages: true, uidNext: true, uidValidity: true };
+    try {
+      if (!this.connected) await this.connect();
+      return await this.#deadline(this.client.status(path, query), 'status');
+    } catch (error) {
+      if (!(error instanceof ImapOperationTimeout)) throw error;
+      await this.connect();
+      return await this.#deadline(this.client.status(path, query), 'status');
+    }
+  }
+
+  /**
+   * List mailboxes and lightweight STATUS for selectable folders.
+   * A stalled STATUS is retried once, then recorded as unknown so the list can continue.
+   * @param {{ includeStatus?: boolean }} [options] Status lookup toggle.
+   * @returns {Promise<object[]>} Mailbox records.
+   */
   async listMailboxes({ includeStatus = true } = {}) {
     await this.connect();
-    const listed = await this.client.list();
+    const listed = await this.#deadline(this.client.list(), 'list');
     const mailboxes = [];
     for (const mailbox of listed) {
       let messages = null;
@@ -45,10 +166,10 @@ export class ImapProvider {
       let uidValidity = null;
       if (includeStatus && isSelectableMailbox({ flags: mailbox.flags ? [...mailbox.flags] : [] })) {
         try {
-          const status = await this.client.status(mailbox.path, { messages: true, uidNext: true, uidValidity: true });
-          messages = status.messages ?? null;
-          uidNext = status.uidNext ?? null;
-          uidValidity = status.uidValidity != null ? String(status.uidValidity) : null;
+          const status = await this.#mailboxStatus(mailbox.path);
+          messages = status?.messages ?? null;
+          uidNext = status?.uidNext ?? null;
+          uidValidity = status?.uidValidity != null ? String(status.uidValidity) : null;
         } catch {
           messages = null;
           uidNext = null;
@@ -70,38 +191,91 @@ export class ImapProvider {
     return mailboxes;
   }
 
+  /**
+   * Append one message.
+   * @param {string} mailbox Mailbox path.
+   * @param {string} mime MIME source.
+   * @param {string[]} [flags] IMAP flags.
+   * @returns {Promise<unknown>} Append result.
+   */
   async append(mailbox, mime, flags = ['\\Seen']) {
     await this.connect();
-    return this.client.append(mailbox, mime, flags);
+    return this.#deadline(this.client.append(mailbox, mime, flags), 'append');
   }
 
+  /**
+   * Read one message source by UID.
+   * @param {string} mailbox Mailbox path.
+   * @param {number|string} uid Message UID.
+   * @returns {Promise<string>} MIME source, or an empty string when missing.
+   */
   async readByUid(mailbox, uid) {
     await this.connect();
-    const lock = await this.client.getMailboxLock(mailbox);
+    const lock = await this.#deadline(
+      this.client.getMailboxLock(mailbox, { acquireTimeout: this.operationTimeoutMs }),
+      'lock'
+    );
     try {
-      const message = await this.client.fetchOne(String(uid), { source: true }, { uid: true });
+      const message = await this.#deadline(
+        this.client.fetchOne(String(uid), { source: true }, { uid: true }),
+        'fetch'
+      );
       return message?.source?.toString('utf8') ?? '';
     } finally {
-      lock.release();
+      this.#release(lock);
     }
   }
 
+  /**
+   * Find a Sent mailbox path from the listing.
+   * @returns {Promise<string|null>} Path, or null when none matches.
+   */
   async findSentMailbox() {
     const mailboxes = await this.listMailboxes();
     return mailboxes.find((mailbox) => /sent|gesendet/i.test(mailbox.path) || /\\\\Sent/i.test(mailbox.specialUse ?? ''))?.path ?? null;
   }
 
-  async *fetchMessages(mailbox, { batchSize = 100, checkpoint, onBatchRange } = {}) {
+  /**
+   * UID SEARCH ALL for one mailbox.
+   * @param {object} mailbox Mailbox with path.
+   * @returns {Promise<number[]>} Existing UIDs. Empty when the server returns no set.
+   */
+  async searchUids(mailbox) {
     await this.connect();
-    const lock = await this.client.getMailboxLock(mailbox.path);
+    const lock = await this.#deadline(
+      this.client.getMailboxLock(mailbox.path, { acquireTimeout: this.operationTimeoutMs }),
+      'lock'
+    );
     try {
-      const status = await this.client.status(mailbox.path, { messages: true, uidValidity: true, uidNext: true });
-      if (!status.messages) return;
-      const startUid = checkpoint?.uidValidity === String(status.uidValidity) ? Math.max(1, Number(checkpoint.lastUid ?? 0) + 1) : 1;
-      const range = boundedUidRange(startUid, batchSize, status.uidNext ?? null);
-      if (!range) return;
-      onBatchRange?.(range);
-      for await (const message of this.client.fetch(`${range.startUid}:${range.endUid}`, { uid: true, flags: true, internalDate: true, envelope: true, source: true }, { uid: true })) {
+      const result = await this.#deadline(this.client.search({ all: true }, { uid: true }), 'search');
+      if (!Array.isArray(result)) return [];
+      return result.map((uid) => Number(uid)).filter((uid) => Number.isInteger(uid) && uid > 0);
+    } finally {
+      this.#release(lock);
+    }
+  }
+
+  /**
+   * Yield fetched messages for one UID query.
+   * @param {string} query UID range or explicit UID list.
+   * @param {object} status Mailbox STATUS used for UIDVALIDITY.
+   * @param {object} mailbox Mailbox being fetched.
+   * @returns {AsyncGenerator<object>} Stored message shapes.
+   */
+  async *#iterateFetch(query, status, mailbox) {
+    const iterator = this.client.fetch(query, {
+      uid: true,
+      flags: true,
+      internalDate: true,
+      envelope: true,
+      source: true
+    }, { uid: true })[Symbol.asyncIterator]();
+    try {
+      while (true) {
+        const next = await this.#deadline(iterator.next(), 'fetch');
+        if (next.done) return;
+        const message = next.value;
+        const raw = message.source?.toString('utf8') ?? null;
         yield {
           uid: message.uid,
           uidValidity: String(status.uidValidity),
@@ -109,15 +283,60 @@ export class ImapProvider {
           flags: [...(message.flags ?? [])],
           internalDate: message.internalDate?.toISOString() ?? null,
           envelope: message.envelope ?? null,
-          raw: message.source?.toString('utf8') ?? null,
-          attachments: []
+          raw,
+          attachments: raw ? await extractIncomingAttachments(raw) : []
         };
       }
     } finally {
-      lock.release();
+      const returned = iterator.return?.();
+      if (returned && typeof returned.catch === 'function') returned.catch(() => {});
     }
   }
 
+  /**
+   * Fetch one bounded UID batch, or an explicit UID list for hole fill.
+   * Each lock, STATUS, and message wait is bounded. A stall closes the socket.
+   * @param {object} mailbox Mailbox with path and id.
+   * @param {object} [options] batchSize, checkpoint, onBatchRange, uids.
+   * @returns {AsyncGenerator<object>} Messages in this batch.
+   */
+  async *fetchMessages(mailbox, { batchSize = 100, checkpoint, onBatchRange, uids } = {}) {
+    await this.connect();
+    const lock = await this.#deadline(
+      this.client.getMailboxLock(mailbox.path, { acquireTimeout: this.operationTimeoutMs }),
+      'lock'
+    );
+    try {
+      const status = await this.#deadline(
+        this.client.status(mailbox.path, { messages: true, uidValidity: true, uidNext: true }),
+        'status'
+      );
+      const explicit = Array.isArray(uids) ? uids.map((uid) => Number(uid)).filter((uid) => uid > 0) : null;
+      if (!explicit && !status?.messages) return;
+      let query;
+      if (explicit) {
+        if (explicit.length === 0) return;
+        onBatchRange?.({ startUid: explicit[0], endUid: explicit[explicit.length - 1] });
+        query = explicit.join(',');
+      } else {
+        const startUid = checkpoint?.uidValidity === String(status.uidValidity)
+          ? Math.max(1, Number(checkpoint.lastUid ?? 0) + 1)
+          : 1;
+        const range = boundedUidRange(startUid, batchSize, status.uidNext ?? null);
+        if (!range) return;
+        onBatchRange?.(range);
+        query = `${range.startUid}:${range.endUid}`;
+      }
+      yield* this.#iterateFetch(query, status, mailbox);
+    } finally {
+      this.#release(lock);
+    }
+  }
+
+  /**
+   * Close the current connection when it is open.
+   * @returns {Promise<void>}
+   */
   async close() {
     if (this.connected) {
       this.connected = false;

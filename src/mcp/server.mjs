@@ -2,15 +2,35 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import * as z from 'zod/v4';
 import { loadConfig } from '../config.mjs';
-import { createApproval, verifyApproval } from '../core/approval.mjs';
-import { composeOutgoingMessage } from '../core/compose-message.mjs';
+import {
+  attachmentUploadDescription,
+  attachmentUploadInputSchema,
+  createAttachmentHandlers,
+  resolveReplyAttachments,
+  stagedAttachmentRefSchema
+} from './attachment-tools.mjs';
+import { createMessageSearchHandler, messageSearchDescription, messageSearchInputSchema } from './message-search-tools.mjs';
+import { createPreviewBinding } from './preview-binding.mjs';
+import { createMessageSendHandler } from './send-preflight.mjs';
 import { createSyncStatusHandlers } from './sync-status-tools.mjs';
+import { redactSensitiveText, redactToolError } from '../security/redact.mjs';
 import { createMailRuntime } from '../runtime/mail-runtime.mjs';
 
-const { config, store, registry, mailService, syncJobService } = createMailRuntime(loadConfig());
-const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ store, registry, syncJobService });
+const { store, registry, mailService } = createMailRuntime(loadConfig());
+const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ store, registry });
+const messageSearch = createMessageSearchHandler({ store, registry });
+const attachmentsApi = createAttachmentHandlers({ store, registry });
 const server = new McpServer({ name: 'agentmail', version: '0.1.0' });
 const pendingApprovals = new Map();
+const pendingPreviews = new Map();
+const previewBinding = createPreviewBinding({
+  store,
+  registry,
+  pendingPreviews,
+  pendingApprovals,
+  attachmentsApi
+});
+const messageSend = createMessageSendHandler({ pendingApprovals, registry, store });
 
 const text = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 
@@ -29,7 +49,7 @@ server.registerTool('mail_account_status', {
 });
 
 server.registerTool('mail_account_register', {
-  description: 'Register non-sensitive account metadata and an opaque Hermes credential reference. Plaintext secrets are rejected.',
+  description: 'Register non-sensitive account metadata and an opaque Hermes credential reference. Plaintext secrets are rejected. mail_account_register does not overwrite an existing account, secretRef, or connection.',
   inputSchema: {
     id: z.string().min(1),
     email: z.string().email(),
@@ -38,19 +58,18 @@ server.registerTool('mail_account_register', {
     label: z.string().optional(),
     connection: z.record(z.string(), z.unknown()).optional()
   }
-}, async (account) => text(registry.register(account)));
+}, async (account) => {
+  try {
+    return text(registry.register(account));
+  } catch (error) {
+    return text({ error: redactToolError(error) });
+  }
+});
 
 server.registerTool('message_search', {
-  description: 'Search the complete local mirror across all folders for one active account.',
-  inputSchema: { accountId: z.string().min(1), query: z.string().default(''), limit: z.number().int().min(1).max(200).default(50) }
-}, async ({ accountId, query, limit }) => {
-  try {
-    registry.assertAccountAccess(accountId);
-  } catch {
-    return text({ error: 'access_denied' });
-  }
-  return text(store.searchMessages(accountId, query, limit));
-});
+  description: messageSearchDescription,
+  inputSchema: messageSearchInputSchema
+}, async (args) => messageSearch(args));
 
 server.registerTool('message_read', {
   description: 'Read one complete locally mirrored message by its exact message key.',
@@ -62,31 +81,48 @@ server.registerTool('message_read', {
   } catch {
     return text({ error: 'access_denied' });
   }
+  await store.backfillMessageAttachments(messageKey);
   const message = store.getMessage(messageKey);
   return text(message ? { ...message, raw: message.raw } : { error: 'source_message_not_found' });
 });
 
+server.registerTool('attachment_upload', {
+  description: attachmentUploadDescription,
+  inputSchema: attachmentUploadInputSchema
+}, async (args) => attachmentsApi.attachmentUpload(args));
+
 server.registerTool('draft_create', {
-  description: 'Persist a draft with explicit account and optional exact reply source.',
+  description: 'Persist a draft with explicit account, optional exact reply source, and optional staged attachment ids; source attachments are not inherited by reply. Only ids passed in attachments are stored, and an omitted list is empty. Attachment results are metadata only.',
   inputSchema: {
     accountId: z.string().min(1),
     sourceMessageKey: z.string().optional(),
     headers: z.record(z.string(), z.unknown()),
     text: z.string(),
-    html: z.string()
+    html: z.string(),
+    attachments: z.array(stagedAttachmentRefSchema).optional()
   }
-}, async ({ accountId, sourceMessageKey, headers, text: bodyText, html }) => {
+}, async ({ accountId, sourceMessageKey, headers, text: bodyText, html, attachments }) => {
   try {
     registry.assertAccountAccess(accountId);
   } catch {
     return text({ error: 'access_denied' });
   }
   if (sourceMessageKey && !store.getMessage(sourceMessageKey)) return text({ error: 'source_message_not_found' });
-  return text(store.createDraft({ accountId, sourceMessageKey, headers, text: bodyText, html }));
+  let staged = [];
+  try {
+    staged = resolveReplyAttachments(
+      (id, refs) => attachmentsApi.attachmentListForAccount(id, refs),
+      accountId,
+      attachments
+    );
+  } catch (error) {
+    return text({ error: error.code || (error.message === 'access_denied' ? 'access_denied' : 'attachment_rejected') });
+  }
+  return text(store.createDraft({ accountId, sourceMessageKey, headers, text: bodyText, html, attachments: staged }));
 });
 
 server.registerTool('draft_read', {
-  description: 'Read one persisted draft.',
+  description: 'Read one persisted draft, including its attachment metadata list.',
   inputSchema: { draftId: z.string().uuid() }
 }, async ({ draftId }) => {
   const draft = store.getDraft(draftId);
@@ -133,55 +169,13 @@ server.registerTool('mailbox_list', {
     return text({ error: error.message === 'access_denied' ? 'access_denied' : error.message });
   }
 });
-server.registerTool('mailbox_sync', {
-  description: 'Synchronize every folder and complete message MIME for an account into the durable local mirror.',
-  inputSchema: { accountId: z.string().min(1), mode: z.enum(['full', 'incremental']).default('incremental') }
-}, async ({ accountId, mode }) => {
-  try {
-    registry.assertAccountAccess(accountId);
-    const job = syncJobService.startAccountSync(accountId, { mode });
-    return text({
-      accountId,
-      mode,
-      jobId: job.jobId,
-      state: job.state,
-      reused: job.reused,
-      startedAt: job.startedAt,
-      completedAt: job.completedAt,
-      error: job.error
-    });
-  } catch (error) {
-    return text({ error: error.message === 'access_denied' ? 'access_denied' : error.message });
-  }
-});
-
-server.registerTool('mailbox_sync_all', {
-  description: 'Synchronize every folder of every enabled mail account into the local mirror.',
-  inputSchema: { mode: z.enum(['full', 'incremental']).default('incremental') }
-}, async ({ mode }) => {
-  const accountIds = registry.list().map((account) => account.id);
-  const { jobs } = syncJobService.startAllAccountSync(accountIds, { mode });
-  return text({
-    mode,
-    jobs: jobs.map((job) => ({
-      accountId: job.accountId,
-      jobId: job.jobId,
-      state: job.state,
-      reused: job.reused,
-      startedAt: job.startedAt,
-      completedAt: job.completedAt,
-      error: job.error
-    }))
-  });
-});
-
 server.registerTool('sync_status', {
-  description: 'Return resumable sync progress per folder for one account. Never returns credentials.',
+  description: 'Read resumable sync progress per folder for one account from the local mirror. Does not start, enqueue, or wait for a sync. Never returns credentials.',
   inputSchema: { accountId: z.string().min(1) }
 }, async ({ accountId }) => syncStatus({ accountId }));
 
 server.registerTool('sync_status_all', {
-  description: 'Return resumable sync progress for every active account. Never returns credentials.',
+  description: 'Read resumable sync progress for every active account from the local mirror. Does not start, enqueue, or wait for a sync. Never returns credentials.',
   inputSchema: {}
 }, async () => syncStatusAll());
 
@@ -241,7 +235,7 @@ server.registerTool('signature_set_default', {
 });
 
 server.registerTool('message_preview', {
-  description: 'Render the exact outgoing text/HTML from new content, the selected or default signature, and an optional quoted source. Use the returned text/html as input to send_approval_create.',
+  description: 'Render the exact outgoing text/HTML from new content, the selected or default signature, and an optional quoted source. Returns a short-lived previewId bound to that text, HTML, signature, quote, attachments, account, and principal. Source attachments are not inherited by reply. Optional staged attachment ids are returned as exact filename, content type, size, and sha256 metadata; omitted ids yield an empty attachment list. send_approval_create retrieves this stored preview server-side and does not require copied text, HTML, MIME, or attachment metadata.',
   inputSchema: {
     accountId: z.string().min(1),
     newText: z.string(),
@@ -249,74 +243,27 @@ server.registerTool('message_preview', {
     signatureId: z.string().uuid().optional(),
     quoteText: z.string().optional(),
     quoteHtml: z.string().optional(),
-    quoteDepth: z.number().int().min(1).max(10).optional()
+    quoteDepth: z.number().int().min(1).max(10).optional(),
+    attachments: z.array(stagedAttachmentRefSchema).optional()
   }
-}, async ({ accountId, newText, newHtml, signatureId, quoteText, quoteHtml, quoteDepth }) => {
-  try {
-    registry.assertAccountAccess(accountId);
-  } catch {
-    return text({ error: 'access_denied' });
-  }
-  let signature;
-  try {
-    signature = store.resolveSignatureForSend({ accountId, explicitId: signatureId });
-  } catch (error) {
-    return text({ error: error.message });
-  }
-  const composed = composeOutgoingMessage({ newText, newHtml, signature, quoteText, quoteHtml, quoteDepth });
-  return text({ ...composed, signature: signature ? { id: signature.id, name: signature.name, version: signature.version } : null });
-});
+}, async (args) => previewBinding.messagePreview(args));
 
 server.registerTool('send_approval_create', {
-  description: 'Create a short-lived approval bound to the exact reviewed outgoing message. Required before message_send.',
+  description: 'Create a short-lived approval from the exact stored message_preview. The server retrieves the preview text, HTML, selected/default signature, and explicit staged attachments, then builds the reviewed MIME; callers must not copy body or MIME fields. A missing preview, another account or principal, changed recipient, changed signature, or changed attachment is rejected. Required before message_send.',
   inputSchema: {
+    previewId: z.string().uuid(),
     accountId: z.string().min(1),
     to: z.array(z.string()).min(1),
-    subject: z.string(),
-    text: z.string(),
-    html: z.string(),
-    mime: z.string()
+    subject: z.string()
   }
-}, async ({ accountId, to, subject, text: bodyText, html, mime }) => {
-  try {
-    registry.assertAccountAccess(accountId);
-  } catch {
-    return text({ error: 'access_denied' });
-  }
-  const payload = { accountId, to, subject, text: bodyText, html, mime };
-  const approval = createApproval(payload, { ttlSeconds: 300 });
-  pendingApprovals.set(approval.id, { approval, payload });
-  return text(approval);
-});
+}, async (args) => previewBinding.sendApprovalCreate(args));
 
 server.registerTool('message_send', {
-  description: 'Send an approved outgoing MIME message, save it to Sent, and verify the copy. Requires a valid, unexpired send_approval_create result for the exact same payload.',
+  description: 'Send the exact server-stored payload identified by approvalId after approval and principal/account/attachment checks, save it to Sent, and verify the copy. No caller-controlled body, MIME, recipient, or attachment fields are accepted. Source attachments are never inherited.',
   inputSchema: {
-    approvalId: z.string().uuid(),
-    accountId: z.string().min(1),
-    to: z.array(z.string()).min(1),
-    subject: z.string(),
-    text: z.string(),
-    html: z.string(),
-    mime: z.string()
+    approvalId: z.string().uuid()
   }
-}, async ({ approvalId, ...payload }) => {
-  const entry = pendingApprovals.get(approvalId);
-  if (!entry) return text({ error: 'approval_not_found' });
-  const normalizedPayload = { accountId: payload.accountId, to: payload.to, subject: payload.subject, text: payload.text, html: payload.html, mime: payload.mime };
-  try {
-    registry.assertAccountAccess(normalizedPayload.accountId);
-  } catch {
-    return text({ error: 'access_denied' });
-  }
-  if (!verifyApproval(entry.approval, normalizedPayload)) return text({ error: 'approval_invalid_or_expired' });
-  pendingApprovals.delete(approvalId);
-  try {
-    return text(await mailService.sendMime(normalizedPayload.accountId, normalizedPayload.mime));
-  } catch (error) {
-    return text({ error: error.message });
-  }
-});
+}, async (args) => messageSend(args, mailService));
 
 async function main() {
   const transport = new StdioServerTransport();
@@ -324,6 +271,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  process.stderr.write(`AgentMail MCP error: ${error.message}\n`);
+  process.stderr.write(`AgentMail MCP error: ${redactSensitiveText(error?.message ?? '')}\n`);
   process.exit(1);
 });

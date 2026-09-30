@@ -1,4 +1,20 @@
 /**
+ * Public account view. The opaque secretRef stays in the store.
+ * @param {object} account Stored account row.
+ * @returns {object}
+ */
+function publicAccount(account) {
+  return {
+    id: account.id,
+    email: account.email,
+    provider: account.provider,
+    connection: account.connection,
+    enabled: account.enabled,
+    hasCredentialReference: Boolean(account.secretRef)
+  };
+}
+
+/**
  * Account registry scoped to the trusted runtime principal (never from MCP arguments).
  * @param {import('../storage/sqlite-store.mjs').SqliteMailStore} store Mail store.
  * @param {string} principal Runtime principal from AGENTMAIL_PRINCIPAL.
@@ -35,8 +51,15 @@ export function createPrincipalRegistry(store, principal) {
         hasCredentialReference: true
       };
     },
+    /**
+     * Register account metadata for this principal.
+     * Returns a public view with no secretRef. Existing rows are not overwritten.
+     * @param {object} account Account metadata and opaque secretRef.
+     * @returns {object}
+     */
     register(account) {
-      return store.activateAccountForPrincipal(account, principal);
+      const stored = store.activateAccountForPrincipal(account, principal);
+      return publicAccount(stored);
     },
     deactivate(id) {
       assertAccountAccess(id);

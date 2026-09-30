@@ -9,6 +9,7 @@ AgentMail is a self-hosted, open-source mail client for reliable AI-assisted ema
 - AI may read selected messages and create drafts, but cannot send, delete, forward, archive, or modify mail without explicit approval.
 - Mail content, links, attachments, and signature HTML are untrusted data.
 - Credentials are brokered by SecretFabric; plaintext secrets never enter chat, model context, logs, or the application database.
+- MCP security contract: the principal is derived from `HERMES_HOME`. Host paths are rejected and never read. `attachment_upload` returns metadata only. Approval is required before `message_send`. mail_account_register does not overwrite an existing account, secretRef, or connection.
 - Every external side effect is idempotent, auditable, and verified by provider read-back where possible.
 - An approval is bound to account, recipients, subject, body, quote, signature, attachments, and policy version.
 
@@ -27,7 +28,7 @@ AgentMail is a self-hosted, open-source mail client for reliable AI-assisted ema
 - Incremental IMAP sync with idempotent message identity.
 - Folders, labels, flags, threading, search, pagination, and offline cache.
 - Read, archive, move, label, star, spam, trash, draft, reply, reply-all, forward.
-- Attachment download/upload with size/type policy.
+- Attachment download/upload with size/type policy. Upload stages base64 content in the local store (no host-path reads) and records filename, content type, size, and sha256. Send approval binds that metadata to the exact MIME; `message_send` adds the bytes to multipart MIME only after approval and verifies the Sent copy. Source attachments are not inherited by reply: draft, preview, and send attach only explicitly selected staged ids, and incoming inline or attached files are not copied into the outgoing MIME.
 - Safe HTML rendering and plain-text fallback.
 - `.eml` import/export.
 

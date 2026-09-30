@@ -1,10 +1,13 @@
 import { fileURLToPath } from 'node:url';
 import { loadWorkerConfig } from '../config.mjs';
+import { redactSensitiveText } from '../security/redact.mjs';
 import { createMailRuntime } from '../runtime/mail-runtime.mjs';
 import { startDurableSyncWorker } from './durable-sync.mjs';
 
 /**
- * Long-lived container entrypoint: profile-scoped config, durable sync, no MCP stdio.
+ * Long-lived container entrypoint.
+ * Loads profile-scoped config and runs mailbox sync on its own interval through mailService.
+ * Does not attach MCP stdio and does not wait for another process to enqueue or finish sync.
  */
 export function runSyncRuntimeWorker() {
   const config = loadWorkerConfig();
@@ -17,7 +20,7 @@ if (isMain) {
   try {
     runSyncRuntimeWorker();
   } catch (error) {
-    process.stderr.write(`AgentMail sync worker error: ${error.message}\n`);
+    process.stderr.write(`AgentMail sync worker error: ${redactSensitiveText(error?.message ?? '')}\n`);
     process.exit(1);
   }
 }

@@ -1,23 +1,14 @@
 import { SyncJobRegistry } from './sync-job-registry.mjs';
 
 /**
- * @param {number} pid
- * @returns {(pid: number) => boolean}
+ * In-process sync bookkeeping.
+ * Runs mailService.syncAccount in the same process that called startAccountSync.
+ * It does not enqueue work for another process, poll a foreign runner, or adopt a job after some other process exits.
+ * The long-lived worker does not use this service; it calls mailService from its own scheduler.
+ * @param {{ mailService: { syncAccount: Function }, store: import('../storage/sqlite-store.mjs').SqliteMailStore }} deps Local executor dependencies.
+ * @returns {{ registry: SyncJobRegistry, startAccountSync: Function, startAllAccountSync: Function, getJobStatus: Function, waitForJob: Function }}
  */
-function defaultIsProcessAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Background sync orchestration: enqueue jobs, dedupe per account, run mailService.syncAccount.
- * @param {{ mailService: { syncAccount: Function }, store: import('../storage/sqlite-store.mjs').SqliteMailStore, processId?: number, isProcessAlive?: (pid: number) => boolean }} deps
- */
-export function createSyncJobService({ mailService, store, processId = process.pid, isProcessAlive = defaultIsProcessAlive }) {
+export function createSyncJobService({ mailService, store }) {
   const registry = new SyncJobRegistry({ store });
 
   /** @type {Map<string, { promise: Promise<void>, resolve: Function, reject: Function }>} */
@@ -26,8 +17,8 @@ export function createSyncJobService({ mailService, store, processId = process.p
   const localRuns = new Set();
 
   /**
-   * @param {string} jobId
-   * @returns {Promise<void>}
+   * @param {string} jobId Job id.
+   * @returns {Promise<void>} Promise that settles when this process finishes the job.
    */
   function ensureWaiter(jobId) {
     let entry = waiters.get(jobId);
@@ -45,7 +36,8 @@ export function createSyncJobService({ mailService, store, processId = process.p
   }
 
   /**
-   * @param {string} jobId
+   * Resolve waiters for a job that this process already finished.
+   * @param {string} jobId Job id.
    */
   function finishWaiter(jobId) {
     const entry = waiters.get(jobId);
@@ -55,73 +47,63 @@ export function createSyncJobService({ mailService, store, processId = process.p
   }
 
   /**
-   * @param {string} jobId
-   * @param {string} accountId
-   * @returns {boolean}
+   * @param {string} jobId Job id.
+   * @returns {boolean} True when the cached job is already completed or failed.
    */
-  function tryClaimRunner(jobId, accountId) {
-    if (!store?.tryAcquireSyncJobRunner) return true;
-    return store.tryAcquireSyncJobRunner({
-      accountId,
-      jobId,
-      pid: processId,
-      isProcessAlive
-    });
+  function settleIfTerminal(jobId) {
+    const row = registry.getByJobId(jobId);
+    if (!row || (row.state !== 'completed' && row.state !== 'failed')) return false;
+    finishWaiter(jobId);
+    return true;
   }
 
   /**
-   * @param {string} jobId
-   * @param {string} accountId
-   */
-  function releaseRunner(jobId, accountId) {
-    store?.releaseSyncJobRunner?.({ accountId, jobId, pid: processId });
-  }
-
-  /**
-   * @param {string} jobId
-   * @param {string} accountId
-   * @param {string} mode
+   * Download mail for one job in this process.
+   * @param {string} jobId Job id.
+   * @param {string} accountId Account id.
+   * @param {string} mode Sync mode.
+   * @returns {Promise<void>}
    */
   async function runJob(jobId, accountId, mode) {
-    if (!tryClaimRunner(jobId, accountId)) {
-      localRuns.delete(jobId);
-      return;
-    }
     registry.markRunning(jobId);
     try {
       await mailService.syncAccount(accountId, { mode, store });
       registry.markCompleted(jobId);
-      finishWaiter(jobId);
     } catch (error) {
       const message = error?.message ?? String(error);
       registry.markFailed(jobId, message);
-      finishWaiter(jobId);
     } finally {
       localRuns.delete(jobId);
-      releaseRunner(jobId, accountId);
+      finishWaiter(jobId);
     }
   }
 
   /**
-   * @param {{ jobId: string, accountId: string, mode: string, reused?: boolean }} job
-   * @param {{ resumeOrphan?: boolean }} [options]
+   * Run a queued or running job locally. Already-finished jobs only release waiters.
+   * @param {{ jobId: string, accountId: string, mode: string, state?: string }} job Job to run.
    */
-  function scheduleJob(job, { resumeOrphan = false } = {}) {
+  function scheduleJob(job) {
+    if (!job?.jobId) return;
     ensureWaiter(job.jobId);
-    if (job.reused && !resumeOrphan) return;
     if (localRuns.has(job.jobId)) return;
-    if (!tryClaimRunner(job.jobId, job.accountId)) return;
+    const current = registry.getByJobId(job.jobId) ?? job;
+    if (current.state === 'completed' || current.state === 'failed') {
+      finishWaiter(job.jobId);
+      return;
+    }
     localRuns.add(job.jobId);
-    setImmediate(() => { void runJob(job.jobId, job.accountId, job.mode); });
+    setImmediate(() => { void runJob(job.jobId, job.accountId, current.mode ?? job.mode); });
   }
 
   for (const job of registry.hydrateActiveSyncJobs()) {
-    scheduleJob(job, { resumeOrphan: true });
+    scheduleJob(job);
   }
 
   /**
-   * @param {string} accountId
-   * @param {{ mode?: string }} [options]
+   * Queue and run one account sync in this process.
+   * @param {string} accountId Account id.
+   * @param {{ mode?: string }} [options] Sync mode.
+   * @returns {object} Public job view.
    */
   function startAccountSync(accountId, { mode = 'incremental' } = {}) {
     const job = registry.enqueue(accountId, { mode });
@@ -130,8 +112,10 @@ export function createSyncJobService({ mailService, store, processId = process.p
   }
 
   /**
-   * @param {string[]} accountIds
-   * @param {{ mode?: string }} [options]
+   * Queue and run a sync for each account in this process.
+   * @param {string[]} accountIds Account ids.
+   * @param {{ mode?: string }} [options] Sync mode.
+   * @returns {{ mode: string, jobs: object[] }} Enqueued jobs.
    */
   function startAllAccountSync(accountIds, { mode = 'incremental' } = {}) {
     const jobs = accountIds.map((accountId) => startAccountSync(accountId, { mode }));
@@ -139,27 +123,22 @@ export function createSyncJobService({ mailService, store, processId = process.p
   }
 
   /**
-   * @param {string} accountId
+   * Latest job recorded for an account.
+   * @param {string} accountId Account id.
+   * @returns {object|null} Public job view or null.
    */
   function getJobStatus(accountId) {
     return registry.getForAccount(accountId);
   }
 
   /**
-   * @param {string} jobId
+   * Wait until this process finishes the job.
+   * @param {string} jobId Job id.
    * @returns {Promise<void>}
    */
   function waitForJob(jobId) {
+    if (settleIfTerminal(jobId)) return Promise.resolve();
     return ensureWaiter(jobId);
-  }
-
-  /**
-   * Re-schedule queued/running jobs after a short-lived MCP process exits.
-   */
-  function resumeOrphanedActiveJobs() {
-    for (const job of registry.hydrateActiveSyncJobs()) {
-      scheduleJob(job, { resumeOrphan: true });
-    }
   }
 
   return {
@@ -167,7 +146,6 @@ export function createSyncJobService({ mailService, store, processId = process.p
     startAccountSync,
     startAllAccountSync,
     getJobStatus,
-    waitForJob,
-    resumeOrphanedActiveJobs
+    waitForJob
   };
 }

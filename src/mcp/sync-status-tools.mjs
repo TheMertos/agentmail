@@ -3,7 +3,8 @@ import { buildSyncStatus, buildSyncStatusAll } from '../mail/sync-status.mjs';
 const text = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 
 /**
- * MCP handlers for sync_status and sync_status_all tools.
+ * Read-only MCP handlers for sync_status and sync_status_all.
+ * They report local checkpoint progress and never start or enqueue a sync.
  * @param {{ store: object, registry: { status: Function, list: Function }, syncJobService?: { getJobStatus: Function } }} deps Dependencies.
  * @returns {{ syncStatus: Function, syncStatusAll: Function }}
  */

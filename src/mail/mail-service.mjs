@@ -34,6 +34,44 @@ export class MailService {
     }
   }
 
+  /**
+   * Open a dedicated Inbox IDLE session.
+   * The returned client is not the sync connection. release() closes it and drops the lease.
+   * @param {string} accountId Account id.
+   * @returns {Promise<{ client: object, release: () => Promise<void> }>} Idle session.
+   */
+  async openIdleWatch(accountId) {
+    const account = this.accountRegistry?.get(accountId);
+    if (!account) throw new Error('account_not_found');
+    if (!this.leaseBroker?.acquire) throw new Error('credential_lease_unavailable');
+    if (!this.providerFactory) throw new Error('provider_unavailable');
+    const lease = await this.leaseBroker.acquire({ accountId, purpose: 'imap-idle', fields: ['imap'] });
+    assertLeaseSafe(lease);
+    try {
+      const provider = await this.providerFactory({ account, lease, operation: 'imap-idle' });
+      let released = false;
+      return {
+        client: provider,
+        /**
+         * Close the IDLE provider and release its SecretFabric lease.
+         * @returns {Promise<void>}
+         */
+        release: async () => {
+          if (released) return;
+          released = true;
+          try {
+            await provider.close?.();
+          } finally {
+            await this.leaseBroker.release?.(lease);
+          }
+        }
+      };
+    } catch (error) {
+      await this.leaseBroker.release?.(lease);
+      throw error;
+    }
+  }
+
   async listMailboxes(accountId) {
     const account = this.accountRegistry?.get(accountId);
     if (!account) throw new Error('account_not_found');
