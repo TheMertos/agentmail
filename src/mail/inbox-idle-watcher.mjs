@@ -1,4 +1,4 @@
-/** Default quiet period before an EXISTS or EXPUNGE event starts a sync. */
+/** Default quiet period before an EXISTS, EXPUNGE, or FLAGS event starts a sync. */
 export const DEFAULT_IDLE_DEBOUNCE_MS = 1_000;
 
 /** Default cap for one IDLE wait so a stuck server cannot block the worker. */
@@ -177,6 +177,7 @@ export function startInboxIdleWatcher({
           const client = session.client;
           client.on('exists', scheduleChange);
           client.on('expunge', scheduleChange);
+          client.on('flags', scheduleChange);
           await untilStop(client.connect(), idleTimeoutMs, 'imap_idle_connect_timeout');
           await untilStop(client.mailboxOpen(inboxPath), idleTimeoutMs, 'imap_idle_select_timeout');
           const idlePromise = Promise.resolve(client.idle());

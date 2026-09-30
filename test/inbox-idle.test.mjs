@@ -126,6 +126,40 @@ test('EXISTS and EXPUNGE schedule one debounced inbox sync', async () => {
   }
 });
 
+test('FLAGS events schedule one debounced inbox sync along with EXISTS and EXPUNGE', async () => {
+  const syncs = [];
+  const client = createIdleClient();
+  const watcher = startInboxIdleWatcher({
+    accountId: 'a',
+    debounceMs: 40,
+    idleTimeoutMs: 5_000,
+    maxAttempts: 2,
+    initialBackoffMs: 1_000,
+    maxBackoffMs: 1_000,
+    openSession: async () => sessionFor(client),
+    onChange: (accountId) => { syncs.push(accountId); }
+  });
+
+  try {
+    await waitFor(() => client.commands.includes('idle'));
+    client.emit('flags', { path: 'INBOX', uid: 7, flags: new Set(['\\Seen']) });
+    client.emit('flags', { path: 'INBOX', uid: 7, flags: new Set([]) });
+    await delay(15);
+    assert.deepEqual(syncs, []);
+    await delay(50);
+    assert.deepEqual(syncs, ['a']);
+    client.emit('exists', { path: 'INBOX', count: 2, prevCount: 1 });
+    await delay(60);
+    assert.deepEqual(syncs, ['a', 'a']);
+    client.emit('expunge', { path: 'INBOX', seq: 1 });
+    await delay(60);
+    assert.deepEqual(syncs, ['a', 'a', 'a']);
+    assert.equal(client.commands.some((command) => /store|messageFlags/i.test(command)), false);
+  } finally {
+    await watcher.stop();
+  }
+});
+
 test('one account opens a single idle watcher', async () => {
   let opens = 0;
   const coordinator = startInboxIdleCoordinator({
