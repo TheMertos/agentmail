@@ -6,7 +6,7 @@
   "description": "Headless, human-controlled MCP mail operations server",
   "scripts": {
     "start": "node src/mcp/server.mjs",
-    "test": "node --test",
+    "test": "node --test test/**/*.test.mjs",
     "lint": "eslint src test",
     "check": "yarn lint && yarn test"
   },

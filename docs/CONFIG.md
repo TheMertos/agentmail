@@ -16,7 +16,7 @@ AGENTMAIL_PRINCIPAL=mert
 
 `AGENTMAIL_PRINCIPAL` identifies the single authorized operator for this AgentMail instance. The MCP server refuses to start without it. Mail accounts, messages, drafts, signatures, sync jobs, and send operations are scoped to that principal; MCP tool arguments cannot override or impersonate it.
 
-These are deployment/runtime settings only. Compose supplies them by default, and operators can override them with a deployment `.env` file.
+These are deployment/runtime settings only. Compose reads `AGENTMAIL_PRINCIPAL` from your deployment `.env` (no default); the Node process refuses to start when it is missing or empty.
 
 ## Transport and infrastructure trust
 
