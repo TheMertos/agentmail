@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadConfig } from '../src/config.mjs';
+import { loadConfig, loadWorkerConfig } from '../src/config.mjs';
 
 const BASE_ENV = {
   AGENTMAIL_DB_PATH: '/data/agentmail.db',
@@ -46,4 +46,12 @@ test('runtime configuration validates values', () => {
     secretFabricUrl: 'http://127.0.0.1:3000',
     secretFabricApiToken: 'tok'
   });
+});
+
+test('worker configuration requires AGENTMAIL_PROFILE and maps principal', () => {
+  const { AGENTMAIL_PRINCIPAL: _p, SECRET_FABRIC_PRINCIPAL: _s, ...base } = BASE_ENV;
+  assert.throws(() => loadWorkerConfig(base), /AGENTMAIL_PROFILE/);
+  const config = loadWorkerConfig({ ...base, AGENTMAIL_PROFILE: 'mert' });
+  assert.equal(config.principal, 'mert');
+  assert.equal(config.secretFabricPrincipal, 'mert');
 });

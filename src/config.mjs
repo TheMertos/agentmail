@@ -1,3 +1,6 @@
+/** Profile/principal name used for Docker resource isolation (fail closed). */
+export const AGENTMAIL_PROFILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 const REQUIRED = [
   'AGENTMAIL_DB_PATH',
   'AGENTMAIL_SYNC_INTERVAL_SECONDS',
@@ -37,4 +40,19 @@ export function loadConfig(env = process.env) {
     secretFabricUrl: env.SECRET_FABRIC_URL,
     secretFabricApiToken: env.SECRET_FABRIC_API_TOKEN
   };
+}
+
+/**
+ * Load runtime configuration for the long-lived sync worker (profile-scoped principal, no MCP args).
+ * @param {Record<string, string|undefined>} [env]
+ */
+export function loadWorkerConfig(env = process.env) {
+  const profile = String(env.AGENTMAIL_PROFILE ?? '').trim();
+  if (!profile) throw new Error('AGENTMAIL_PROFILE is required for the sync worker');
+  if (!AGENTMAIL_PROFILE_PATTERN.test(profile)) throw new Error('AGENTMAIL_PROFILE is invalid');
+  return loadConfig({
+    ...env,
+    AGENTMAIL_PRINCIPAL: profile,
+    SECRET_FABRIC_PRINCIPAL: profile
+  });
 }

@@ -33,7 +33,9 @@ Exclusions must be explicit and visible in `sync_policy_get`. Spam or Trash may 
 
 ## Worker behavior
 
-- Starts with the MCP server process in Docker.
+- Runs as the long-lived Docker container process (`src/worker/sync-runtime-worker.mjs`), scoped by `AGENTMAIL_PROFILE` to the provisioned principal.
+- MCP `docker exec` sessions are short-lived stdio attachments only; exiting MCP does not stop the sync worker.
+- On startup and each sync cycle, resumes queued/running jobs left by a dead MCP process via SQLite job/runner state.
 - Uses a per-account lock so two syncs cannot overlap.
 - Runs incremental sync on the configured interval.
 - Runs a full sync when a policy is created, `UIDVALIDITY` changes, or a checkpoint is invalid.

@@ -153,11 +153,21 @@ export function createSyncJobService({ mailService, store, processId = process.p
     return ensureWaiter(jobId);
   }
 
+  /**
+   * Re-schedule queued/running jobs after a short-lived MCP process exits.
+   */
+  function resumeOrphanedActiveJobs() {
+    for (const job of registry.hydrateActiveSyncJobs()) {
+      scheduleJob(job, { resumeOrphan: true });
+    }
+  }
+
   return {
     registry,
     startAccountSync,
     startAllAccountSync,
     getJobStatus,
-    waitForJob
+    waitForJob,
+    resumeOrphanedActiveJobs
   };
 }
