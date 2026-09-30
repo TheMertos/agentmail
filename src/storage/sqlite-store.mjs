@@ -76,6 +76,18 @@ const SCHEMA = `
     completed_at TEXT,
     PRIMARY KEY (account_id, mailbox_id)
   );
+  CREATE TABLE IF NOT EXISTS sync_jobs (
+    job_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    state TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    error TEXT,
+    updated_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS sync_jobs_account_active ON sync_jobs(account_id)
+    WHERE state IN ('queued', 'running');
 `;
 
 const CHECKPOINT_MIGRATIONS = [
@@ -302,6 +314,66 @@ export class SqliteMailStore {
   getCheckpoint(accountId, mailboxId) {
     const row = this.db.prepare('SELECT * FROM sync_checkpoints WHERE account_id = ? AND mailbox_id = ?').get(accountId, mailboxId);
     return row ? this.#mapCheckpointRow(row) : null;
+  }
+
+  /**
+   * Persist or update a background sync job record.
+   * @param {object} job Job fields (jobId, accountId, mode, state, startedAt, completedAt, error).
+   */
+  upsertSyncJob(job) {
+    const updatedAt = new Date().toISOString();
+    this.db.prepare(`INSERT INTO sync_jobs(job_id, account_id, mode, state, started_at, completed_at, error, updated_at)
+      VALUES (@jobId, @accountId, @mode, @state, @startedAt, @completedAt, @error, @updatedAt)
+      ON CONFLICT(job_id) DO UPDATE SET
+        state = excluded.state,
+        started_at = excluded.started_at,
+        completed_at = excluded.completed_at,
+        error = excluded.error,
+        updated_at = excluded.updated_at`)
+      .run({
+        jobId: job.jobId,
+        accountId: job.accountId,
+        mode: job.mode,
+        state: job.state,
+        startedAt: job.startedAt ?? null,
+        completedAt: job.completedAt ?? null,
+        error: job.error ?? null,
+        updatedAt
+      });
+  }
+
+  /**
+   * Latest sync job for an account (any terminal or active state).
+   * @param {string} accountId Account id.
+   * @returns {object|null} Normalized job or null.
+   */
+  getLatestSyncJob(accountId) {
+    const row = this.db.prepare(
+      `SELECT * FROM sync_jobs WHERE account_id = ? ORDER BY updated_at DESC LIMIT 1`
+    ).get(accountId);
+    return row ? this.#mapSyncJobRow(row) : null;
+  }
+
+  /**
+   * Jobs still marked queued or running (e.g. after process restart).
+   * @returns {object[]}
+   */
+  listInterruptedSyncJobs() {
+    return this.db.prepare(
+      `SELECT * FROM sync_jobs WHERE state IN ('queued', 'running') ORDER BY updated_at`
+    ).all().map((row) => this.#mapSyncJobRow(row));
+  }
+
+  #mapSyncJobRow(row) {
+    return {
+      jobId: row.job_id,
+      accountId: row.account_id,
+      mode: row.mode,
+      state: row.state,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      error: row.error
+    };
   }
 
   close() { this.db.close(); }

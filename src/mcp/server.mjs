@@ -11,6 +11,7 @@ import { SmtpProvider } from '../mail/smtp-provider.mjs';
 import { createApproval, verifyApproval } from '../core/approval.mjs';
 import { composeOutgoingMessage } from '../core/compose-message.mjs';
 import { createSyncStatusHandlers } from './sync-status-tools.mjs';
+import { createSyncJobService } from '../mail/sync-job-service.mjs';
 
 const IMAP_FIELDS = ['incoming.host', 'incoming.port', 'incoming.security', 'incoming.username', 'incoming.password'];
 const SMTP_FIELDS = ['outgoing.host', 'outgoing.port', 'outgoing.security', 'outgoing.username', 'outgoing.password'];
@@ -44,7 +45,8 @@ async function providerFactory({ account, lease, operation }) {
 }
 
 const mailService = new MailService({ accountRegistry: registry, leaseBroker, providerFactory });
-const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ store, registry });
+const syncJobService = createSyncJobService({ mailService, store });
+const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ store, registry, syncJobService });
 const server = new McpServer({ name: 'agentmail', version: '0.1.0' });
 const pendingApprovals = new Map();
 
@@ -145,7 +147,18 @@ server.registerTool('mailbox_sync', {
   inputSchema: { accountId: z.string().min(1), mode: z.enum(['full', 'incremental']).default('incremental') }
 }, async ({ accountId, mode }) => {
   try {
-    return text(await mailService.syncAccount(accountId, { mode, store }));
+    if (!registry.status(accountId)?.enabled) return text({ error: 'account_not_active' });
+    const job = syncJobService.startAccountSync(accountId, { mode });
+    return text({
+      accountId,
+      mode,
+      jobId: job.jobId,
+      state: job.state,
+      reused: job.reused,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      error: job.error
+    });
   } catch (error) {
     return text({ error: error.message });
   }
@@ -155,15 +168,20 @@ server.registerTool('mailbox_sync_all', {
   description: 'Synchronize every folder of every enabled mail account into the local mirror.',
   inputSchema: { mode: z.enum(['full', 'incremental']).default('incremental') }
 }, async ({ mode }) => {
-  const results = [];
-  for (const account of registry.list()) {
-    try {
-      results.push(await mailService.syncAccount(account.id, { mode, store }));
-    } catch (error) {
-      results.push({ accountId: account.id, error: error.message });
-    }
-  }
-  return text({ mode, results });
+  const accountIds = registry.list().map((account) => account.id);
+  const { jobs } = syncJobService.startAllAccountSync(accountIds, { mode });
+  return text({
+    mode,
+    jobs: jobs.map((job) => ({
+      accountId: job.accountId,
+      jobId: job.jobId,
+      state: job.state,
+      reused: job.reused,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      error: job.error
+    }))
+  });
 });
 
 server.registerTool('sync_status', {

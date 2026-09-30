@@ -5,12 +5,28 @@ import { isMailboxSyncComplete, isSelectableMailbox } from './mailbox-sync.mjs';
  * Build MCP-facing sync status for one account from store checkpoints.
  * @param {import('../storage/sqlite-store.mjs').SqliteMailStore} store Mail store.
  * @param {string} accountId Account identifier.
+ * @param {object|null} [syncJob] Optional background sync job record.
  * @returns {object} Status payload for the account.
  */
-export function buildSyncStatus(store, accountId) {
+function attachSyncJob(payload, syncJob) {
+  if (!syncJob) return payload;
+  return {
+    ...payload,
+    job: {
+      jobId: syncJob.jobId,
+      state: syncJob.state,
+      mode: syncJob.mode,
+      startedAt: syncJob.startedAt ?? null,
+      completedAt: syncJob.completedAt ?? null,
+      error: syncJob.error ?? null
+    }
+  };
+}
+
+export function buildSyncStatus(store, accountId, syncJob = null) {
   const checkpointRows = store.listSyncCheckpoints(accountId);
   if (checkpointRows.length === 0) {
-    return {
+    return attachSyncJob({
       accountId,
       state: 'not_started',
       folders: [],
@@ -19,7 +35,7 @@ export function buildSyncStatus(store, accountId) {
       remaining: null,
       percentage: null,
       percentageReason: NO_CHECKPOINT_PERCENTAGE_REASON
-    };
+    }, syncJob);
   }
 
   const folders = checkpointRows.map((row) => {
@@ -71,7 +87,7 @@ export function buildSyncStatus(store, accountId) {
     selectable: f.selectable
   })));
 
-  return {
+  return attachSyncJob({
     accountId,
     folders,
     downloadedCount: accountProgress.downloadedCount,
@@ -79,15 +95,19 @@ export function buildSyncStatus(store, accountId) {
     remaining: accountProgress.remaining,
     percentage: accountProgress.percentage,
     percentageReason: accountProgress.percentageReason
-  };
+  }, syncJob);
 }
 
 /**
  * Build sync status for every active account.
  * @param {import('../storage/sqlite-store.mjs').SqliteMailStore} store Mail store.
+ * @param {(accountId: string) => object|null} [getJobForAccount]
  * @returns {{ accounts: object[] }}
  */
-export function buildSyncStatusAll(store) {
-  const accounts = store.listActiveAccounts().map((account) => buildSyncStatus(store, account.id));
+export function buildSyncStatusAll(store, getJobForAccount = () => null) {
+  const accounts = store.listActiveAccounts().map((account) => {
+    const job = getJobForAccount(account.id);
+    return buildSyncStatus(store, account.id, job);
+  });
   return { accounts };
 }
