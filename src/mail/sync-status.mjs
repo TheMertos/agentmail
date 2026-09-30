@@ -1,4 +1,5 @@
 import { accountSyncProgress, folderSyncProgress, NO_CHECKPOINT_PERCENTAGE_REASON } from './sync-progress.mjs';
+import { isMailboxSyncComplete, isSelectableMailbox } from './mailbox-sync.mjs';
 
 /**
  * Build MCP-facing sync status for one account from store checkpoints.
@@ -22,24 +23,34 @@ export function buildSyncStatus(store, accountId) {
   }
 
   const folders = checkpointRows.map((row) => {
+    const folderMeta = store.getFolderMetadata?.(accountId, row.mailboxId) ?? null;
+    const selectable = folderMeta ? isSelectableMailbox(folderMeta) : true;
     const localCount = row.localMessageCount ?? store.countMessagesInMailbox(accountId, row.mailboxId);
+    const syncComplete = isMailboxSyncComplete({
+      lastUid: row.lastUid,
+      uidNext: row.uidNext,
+      remoteMessages: row.remoteMessages,
+      localMessageCount: localCount
+    });
+    const state = syncComplete ? 'completed' : (row.status === 'completed' ? 'syncing' : (row.status ?? 'unknown'));
     const folderProgress = folderSyncProgress({
       remoteMessages: row.remoteMessages,
       localCount,
       uidNext: row.uidNext,
       lastUid: row.lastUid,
-      state: row.status
+      state
     });
     return {
       folderId: row.mailboxId,
       path: store.getFolderPath(accountId, row.mailboxId),
+      selectable,
       remoteCount: row.remoteMessages,
       localCount,
       downloadedCount: folderProgress.downloadedCount,
       remaining: folderProgress.remaining,
       percentage: folderProgress.percentage,
       percentageReason: folderProgress.percentageReason,
-      state: row.status ?? 'unknown',
+      state,
       uidValidity: row.uidValidity ?? null,
       uidNext: row.uidNext ?? null,
       lastCheckpoint: {
@@ -56,7 +67,8 @@ export function buildSyncStatus(store, accountId) {
   const accountProgress = accountSyncProgress(folders.map((f) => ({
     folderId: f.folderId,
     remoteMessages: f.remoteCount,
-    localCount: f.localCount
+    localCount: f.localCount,
+    selectable: f.selectable
   })));
 
   return {

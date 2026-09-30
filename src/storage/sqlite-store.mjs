@@ -257,6 +257,22 @@ export class SqliteMailStore {
     return row?.path ?? folderId;
   }
 
+  /**
+   * Parsed folder metadata from the local mirror.
+   * @param {string} accountId Account id.
+   * @param {string} folderId Folder id.
+   * @returns {object|null} Folder record or null.
+   */
+  getFolderMetadata(accountId, folderId) {
+    const row = this.db.prepare('SELECT metadata_json FROM folders WHERE account_id = ? AND folder_id = ?').get(accountId, folderId);
+    if (!row?.metadata_json) return null;
+    try {
+      return JSON.parse(row.metadata_json);
+    } catch {
+      return null;
+    }
+  }
+
   #mapCheckpointRow(row) {
     if (!row) return null;
     return {

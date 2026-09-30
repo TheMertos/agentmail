@@ -1,3 +1,6 @@
+import { boundedUidRange } from './imap-provider.mjs';
+import { isMailboxSyncComplete, isSelectableMailbox } from './mailbox-sync.mjs';
+
 function mailboxRemoteStatus(mailbox) {
   return {
     uidValidity: mailbox.uidValidity != null ? String(mailbox.uidValidity) : null,
@@ -28,6 +31,9 @@ export async function syncAccount({ accountId, provider, store, mode = 'incremen
   const now = () => new Date().toISOString();
 
   for (const mailbox of mailboxes) {
+    if (!isSelectableMailbox(mailbox)) {
+      continue;
+    }
     const remote = mailboxRemoteStatus(mailbox);
     let checkpoint = await store.getCheckpoint?.(accountId, mailbox.id);
 
@@ -76,11 +82,28 @@ export async function syncAccount({ accountId, provider, store, mode = 'incremen
     });
 
     while (true) {
-      if (remote.uidNext != null && lastUid >= remote.uidNext - 1) break;
+      if (isMailboxSyncComplete({
+        lastUid,
+        uidNext: remote.uidNext,
+        remoteMessages: remote.remoteMessages,
+        localMessageCount: store.countMessagesInMailbox?.(accountId, mailbox.id) ?? folderCount
+      })) {
+        break;
+      }
+      const batchStartUid = lastUid + 1;
+      const plannedRange = remote.uidNext != null ? boundedUidRange(batchStartUid, batchSize, remote.uidNext) : null;
+      if (remote.uidNext != null && !plannedRange) break;
+
       let batchCount = 0;
       let batchHighUid = lastUid;
+      let attemptedRange = null;
       const activeCheckpoint = { lastUid, uidValidity };
-      for await (const message of provider.fetchMessages(mailbox, { mode, checkpoint: activeCheckpoint, batchSize })) {
+      for await (const message of provider.fetchMessages(mailbox, {
+        mode,
+        checkpoint: activeCheckpoint,
+        batchSize,
+        onBatchRange: (range) => { attemptedRange = range; }
+      })) {
         if (message.uid === undefined || message.uid === null) {
           skippedMessages += 1;
           continue;
@@ -107,7 +130,27 @@ export async function syncAccount({ accountId, provider, store, mode = 'incremen
         batchHighUid = Math.max(batchHighUid, uidNum);
         lastUid = batchHighUid;
       }
-      if (batchCount === 0) break;
+      if (batchCount === 0) {
+        if (attemptedRange && attemptedRange.endUid > lastUid) {
+          lastUid = attemptedRange.endUid;
+          const localMessageCount = store.countMessagesInMailbox?.(accountId, mailbox.id) ?? folderCount;
+          await store.checkpoint({
+            accountId,
+            mailboxId: mailbox.id,
+            mode,
+            messageCount: folderCount,
+            lastUid,
+            uidValidity,
+            remoteMessages: remote.remoteMessages,
+            uidNext: remote.uidNext,
+            localMessageCount,
+            status: 'syncing',
+            startedAt
+          });
+          continue;
+        }
+        break;
+      }
       if (batchHighUid <= activeCheckpoint.lastUid) break;
 
       const localMessageCount = store.countMessagesInMailbox?.(accountId, mailbox.id) ?? folderCount;
@@ -127,6 +170,12 @@ export async function syncAccount({ accountId, provider, store, mode = 'incremen
     }
 
     const localMessageCount = store.countMessagesInMailbox?.(accountId, mailbox.id) ?? folderCount;
+    const complete = isMailboxSyncComplete({
+      lastUid,
+      uidNext: remote.uidNext,
+      remoteMessages: remote.remoteMessages,
+      localMessageCount
+    });
     await store.checkpoint({
       accountId,
       mailboxId: mailbox.id,
@@ -137,9 +186,9 @@ export async function syncAccount({ accountId, provider, store, mode = 'incremen
       remoteMessages: remote.remoteMessages,
       uidNext: remote.uidNext,
       localMessageCount,
-      status: 'completed',
+      status: complete ? 'completed' : 'syncing',
       startedAt,
-      completedAt: now()
+      completedAt: complete ? now() : null
     });
   }
 

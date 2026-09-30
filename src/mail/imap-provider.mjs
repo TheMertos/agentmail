@@ -1,4 +1,5 @@
 import { ImapFlow } from 'imapflow';
+import { isSelectableMailbox } from './mailbox-sync.mjs';
 
 /**
  * Compute inclusive UID range for one bounded fetch batch.
@@ -42,7 +43,7 @@ export class ImapProvider {
       let messages = null;
       let uidNext = null;
       let uidValidity = null;
-      if (includeStatus) {
+      if (includeStatus && isSelectableMailbox({ flags: mailbox.flags ? [...mailbox.flags] : [] })) {
         try {
           const status = await this.client.status(mailbox.path, { messages: true, uidNext: true, uidValidity: true });
           messages = status.messages ?? null;
@@ -90,7 +91,7 @@ export class ImapProvider {
     return mailboxes.find((mailbox) => /sent|gesendet/i.test(mailbox.path) || /\\\\Sent/i.test(mailbox.specialUse ?? ''))?.path ?? null;
   }
 
-  async *fetchMessages(mailbox, { batchSize = 100, checkpoint } = {}) {
+  async *fetchMessages(mailbox, { batchSize = 100, checkpoint, onBatchRange } = {}) {
     await this.connect();
     const lock = await this.client.getMailboxLock(mailbox.path);
     try {
@@ -99,6 +100,7 @@ export class ImapProvider {
       const startUid = checkpoint?.uidValidity === String(status.uidValidity) ? Math.max(1, Number(checkpoint.lastUid ?? 0) + 1) : 1;
       const range = boundedUidRange(startUid, batchSize, status.uidNext ?? null);
       if (!range) return;
+      onBatchRange?.(range);
       for await (const message of this.client.fetch(`${range.startUid}:${range.endUid}`, { uid: true, flags: true, internalDate: true, envelope: true, source: true }, { uid: true })) {
         yield {
           uid: message.uid,

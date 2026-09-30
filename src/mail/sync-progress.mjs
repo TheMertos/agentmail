@@ -36,7 +36,8 @@ export const NO_CHECKPOINT_PERCENTAGE_REASON =
   'no completed sync checkpoint or reliable remote total yet';
 
 export function accountSyncProgress(folders) {
-  if (folders.length === 0) {
+  const participating = folders.filter((folder) => folder.selectable !== false && folder.includeInAccountProgress !== false);
+  if (participating.length === 0) {
     return {
       downloadedCount: 0,
       remoteCount: null,
@@ -50,7 +51,7 @@ export function accountSyncProgress(folders) {
   let remoteCount = 0;
   let unreliableFolder = null;
 
-  for (const folder of folders) {
+  for (const folder of participating) {
     const localCount = Number(folder.localCount ?? 0);
     downloadedCount += localCount;
     const remote = folder.remoteMessages;
