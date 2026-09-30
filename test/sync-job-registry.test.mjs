@@ -66,7 +66,7 @@ test('after completed job a new enqueue creates a fresh job', () => {
   assert.equal(second.state, 'queued');
 });
 
-test('persisted registry recovers last job per account after restart', () => {
+test('persisted registry hydrates queued or running jobs without failing them', () => {
   const dir = mkdtempSync(join(tmpdir(), 'agentmail-sync-jobs-'));
   const dbPath = join(dir, 'mail.db');
   const store = new SqliteMailStore(dbPath);
@@ -77,11 +77,11 @@ test('persisted registry recovers last job per account after restart', () => {
 
   const store2 = new SqliteMailStore(dbPath);
   const after = new SyncJobRegistry({ store: store2 });
-  after.recoverInterruptedJobs();
+  after.hydrateActiveSyncJobs();
   const recovered = after.getForAccount('acct-a');
   assert.equal(recovered.jobId, job.jobId);
-  assert.equal(recovered.state, 'failed');
-  assert.match(recovered.error, /interrupt|restart/i);
+  assert.equal(recovered.state, 'running');
+  assert.equal(recovered.error, null);
   store2.close();
   rmSync(dir, { recursive: true, force: true });
 });

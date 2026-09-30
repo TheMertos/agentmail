@@ -15,14 +15,19 @@ export function createSyncStatusHandlers({ store, registry, syncJobService }) {
    * @param {{ accountId: string }} args Tool input.
    */
   function syncStatus({ accountId }) {
-    if (!registry.status(accountId)?.enabled) return text({ error: 'account_not_active' });
+    try {
+      registry.assertAccountAccess(accountId);
+    } catch {
+      return text({ error: 'access_denied' });
+    }
     const status = buildSyncStatus(store, accountId, jobFor(accountId));
     return text(status);
   }
 
-  /** Return sync progress for all active accounts. */
+  /** Return sync progress for all active accounts visible to the scoped registry. */
   function syncStatusAll() {
-    return text(buildSyncStatusAll(store, jobFor));
+    const accountIds = registry.list().map((account) => account.id);
+    return text(buildSyncStatusAll(store, jobFor, accountIds));
   }
 
   return { syncStatus, syncStatusAll };

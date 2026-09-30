@@ -5,11 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteMailStore } from '../src/storage/sqlite-store.mjs';
 import { buildSyncStatus, buildSyncStatusAll } from '../src/mail/sync-status.mjs';
+import { activateTestAccount } from './test-principal.mjs';
 
 test('buildSyncStatus exposes per-folder progress and checkpoint metadata', () => {
   const dir = mkdtempSync(join(tmpdir(), 'agentmail-status-'));
   const store = new SqliteMailStore(join(dir, 'mail.db'));
-  store.activateAccount({ id: 'a', email: 'a@example.test', provider: 'imap', secretRef: 'ref' });
+  activateTestAccount(store, { id: 'a', email: 'a@example.test', provider: 'imap', secretRef: 'ref' });
   store.checkpoint({
     accountId: 'a',
     mailboxId: 'inbox',
@@ -42,7 +43,7 @@ test('buildSyncStatus exposes per-folder progress and checkpoint metadata', () =
 test('buildSyncStatus reports not_started when account has no sync checkpoints', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agentmail-status-empty-'));
   const store = new SqliteMailStore(join(dir, 'mail.db'));
-  store.activateAccount({ id: 'a', email: 'a@example.test', provider: 'imap', secretRef: 'ref' });
+  activateTestAccount(store, { id: 'a', email: 'a@example.test', provider: 'imap', secretRef: 'ref' });
   await store.upsertMessage({
     accountId: 'a',
     mailboxId: 'inbox',
@@ -69,7 +70,7 @@ test('buildSyncStatus reports not_started when account has no sync checkpoints',
 test('buildSyncStatusAll does not report 100% for accounts without checkpoints', () => {
   const dir = mkdtempSync(join(tmpdir(), 'agentmail-status-all-empty-'));
   const store = new SqliteMailStore(join(dir, 'mail.db'));
-  store.activateAccount({ id: 'a', email: 'a@example.test', provider: 'imap', secretRef: 'ref-a' });
+  activateTestAccount(store, { id: 'a', email: 'a@example.test', provider: 'imap', secretRef: 'ref-a' });
   const all = buildSyncStatusAll(store);
   assert.equal(all.accounts.length, 1);
   assert.equal(all.accounts[0].percentage, null);
@@ -82,8 +83,8 @@ test('buildSyncStatusAll does not report 100% for accounts without checkpoints',
 test('buildSyncStatusAll lists every active account', () => {
   const dir = mkdtempSync(join(tmpdir(), 'agentmail-status-all-'));
   const store = new SqliteMailStore(join(dir, 'mail.db'));
-  store.activateAccount({ id: 'a', email: 'a@example.test', provider: 'imap', secretRef: 'ref-a' });
-  store.activateAccount({ id: 'b', email: 'b@example.test', provider: 'imap', secretRef: 'ref-b' });
+  activateTestAccount(store, { id: 'a', email: 'a@example.test', provider: 'imap', secretRef: 'ref-a' });
+  activateTestAccount(store, { id: 'b', email: 'b@example.test', provider: 'imap', secretRef: 'ref-b' });
   store.deactivateAccount('b');
   const all = buildSyncStatusAll(store);
   assert.equal(all.accounts.length, 1);

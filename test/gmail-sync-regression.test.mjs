@@ -7,6 +7,7 @@ import { syncAccount } from '../src/mail/sync-engine.mjs';
 import { accountSyncProgress } from '../src/mail/sync-progress.mjs';
 import { buildSyncStatus } from '../src/mail/sync-status.mjs';
 import { SqliteMailStore } from '../src/storage/sqlite-store.mjs';
+import { activateTestAccount } from './test-principal.mjs';
 
 const GMAIL_ALL_MAIL = '[Google Mail]/Alle Nachrichten';
 const GMAIL_PARENT = '[Google Mail]';
@@ -132,7 +133,7 @@ test('account percentage ignores Noselect parent with null remote total', () => 
 test('buildSyncStatus Gmail regression: partial folder not completed, account percent from selectable only', () => {
   const dir = mkdtempSync(join(tmpdir(), 'agentmail-gmail-regression-'));
   const store = new SqliteMailStore(join(dir, 'mail.db'));
-  store.activateAccount({ id: 'gmail', email: 'u@gmail.com', provider: 'imap', secretRef: 'ref' });
+  activateTestAccount(store, { id: 'gmail', email: 'u@gmail.com', provider: 'imap', secretRef: 'ref' });
   store.upsertFolder({ accountId: 'gmail', id: GMAIL_PARENT, path: GMAIL_PARENT, flags: ['\\Noselect'] });
   store.upsertFolder({ accountId: 'gmail', id: GMAIL_ALL_MAIL, path: GMAIL_ALL_MAIL, flags: [] });
   store.checkpoint({

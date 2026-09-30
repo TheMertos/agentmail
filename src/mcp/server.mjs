@@ -12,23 +12,19 @@ import { createApproval, verifyApproval } from '../core/approval.mjs';
 import { composeOutgoingMessage } from '../core/compose-message.mjs';
 import { createSyncStatusHandlers } from './sync-status-tools.mjs';
 import { createSyncJobService } from '../mail/sync-job-service.mjs';
+import { createPrincipalRegistry } from '../security/principal-scope.mjs';
 
 const IMAP_FIELDS = ['incoming.host', 'incoming.port', 'incoming.security', 'incoming.username', 'incoming.password'];
 const SMTP_FIELDS = ['outgoing.host', 'outgoing.port', 'outgoing.security', 'outgoing.username', 'outgoing.password'];
 
 const config = loadConfig();
 const store = new SqliteMailStore(config.dbPath);
-const registry = {
-  get: (id) => store.getAccount(id),
-  list: () => store.listActiveAccounts().map(({ secretRef, ...account }) => ({ ...account, hasCredentialReference: true })),
-  status: (id) => { const account = store.getAccount(id); return account ? { id: account.id, email: account.email, provider: account.provider, enabled: account.enabled, hasCredentialReference: true } : null; },
-  register: (account) => store.activateAccount(account)
-};
+const registry = createPrincipalRegistry(store, config.principal);
 
 const resolveCredentials = createSecretFabricResolver({ baseUrl: config.secretFabricUrl, apiToken: config.secretFabricApiToken });
 const leaseBroker = createLeaseBroker({
   resolver: ({ accountId, purpose }) => {
-    const account = store.getAccount(accountId);
+    const account = registry.get(accountId);
     if (!account) throw new Error('account_not_found');
     const fieldPaths = purpose === 'smtp-send' ? SMTP_FIELDS : IMAP_FIELDS;
     return resolveCredentials({ resourceId: account.secretRef, purpose, fieldPaths });
@@ -82,7 +78,11 @@ server.registerTool('message_search', {
   description: 'Search the complete local mirror across all folders for one active account.',
   inputSchema: { accountId: z.string().min(1), query: z.string().default(''), limit: z.number().int().min(1).max(200).default(50) }
 }, async ({ accountId, query, limit }) => {
-  if (!registry.status(accountId)?.enabled) return text({ error: 'account_not_active' });
+  try {
+    registry.assertAccountAccess(accountId);
+  } catch {
+    return text({ error: 'access_denied' });
+  }
   return text(store.searchMessages(accountId, query, limit));
 });
 
@@ -91,7 +91,11 @@ server.registerTool('message_read', {
   inputSchema: { messageKey: z.string().min(1) }
 }, async ({ messageKey }) => {
   const accountId = messageKey.split(':', 1)[0];
-  if (!registry.status(accountId)?.enabled) return text({ error: 'account_not_active' });
+  try {
+    registry.assertAccountAccess(accountId);
+  } catch {
+    return text({ error: 'access_denied' });
+  }
   const message = store.getMessage(messageKey);
   return text(message ? { ...message, raw: message.raw } : { error: 'source_message_not_found' });
 });
@@ -106,7 +110,11 @@ server.registerTool('draft_create', {
     html: z.string()
   }
 }, async ({ accountId, sourceMessageKey, headers, text: bodyText, html }) => {
-  if (!registry.status(accountId)?.enabled) return text({ error: 'account_not_active' });
+  try {
+    registry.assertAccountAccess(accountId);
+  } catch {
+    return text({ error: 'access_denied' });
+  }
   if (sourceMessageKey && !store.getMessage(sourceMessageKey)) return text({ error: 'source_message_not_found' });
   return text(store.createDraft({ accountId, sourceMessageKey, headers, text: bodyText, html }));
 });
@@ -114,13 +122,26 @@ server.registerTool('draft_create', {
 server.registerTool('draft_read', {
   description: 'Read one persisted draft.',
   inputSchema: { draftId: z.string().uuid() }
-}, async ({ draftId }) => text(store.getDraft(draftId) ?? { error: 'draft_not_found' }));
+}, async ({ draftId }) => {
+  const draft = store.getDraft(draftId);
+  if (!draft) return text({ error: 'draft_not_found' });
+  try {
+    registry.assertAccountAccess(draft.accountId);
+  } catch {
+    return text({ error: 'access_denied' });
+  }
+  return text(draft);
+});
 
 server.registerTool('draft_list', {
   description: 'List drafts for one active account.',
   inputSchema: { accountId: z.string().min(1) }
 }, async ({ accountId }) => {
-  if (!registry.status(accountId)?.enabled) return text({ error: 'account_not_active' });
+  try {
+    registry.assertAccountAccess(accountId);
+  } catch {
+    return text({ error: 'access_denied' });
+  }
   return text(store.listDrafts(accountId));
 });
 
@@ -128,8 +149,11 @@ server.registerTool('mail_account_deactivate', {
   description: 'Remove an account from the active sync/connect list without deleting its local mirror.',
   inputSchema: { accountId: z.string().min(1) }
 }, async ({ accountId }) => {
-  store.deactivateAccount(accountId);
-  return text({ accountId, status: 'inactive', localDataRetained: true });
+  try {
+    return text(registry.deactivate(accountId));
+  } catch (error) {
+    return text({ error: error.message === 'access_denied' ? 'access_denied' : error.message });
+  }
 });
 
 server.registerTool('mailbox_list', {
@@ -137,9 +161,10 @@ server.registerTool('mailbox_list', {
   inputSchema: { accountId: z.string().min(1) }
 }, async ({ accountId }) => {
   try {
+    registry.assertAccountAccess(accountId);
     return text(await mailService.listMailboxes(accountId));
   } catch (error) {
-    return text({ error: error.message });
+    return text({ error: error.message === 'access_denied' ? 'access_denied' : error.message });
   }
 });
 server.registerTool('mailbox_sync', {
@@ -147,7 +172,7 @@ server.registerTool('mailbox_sync', {
   inputSchema: { accountId: z.string().min(1), mode: z.enum(['full', 'incremental']).default('incremental') }
 }, async ({ accountId, mode }) => {
   try {
-    if (!registry.status(accountId)?.enabled) return text({ error: 'account_not_active' });
+    registry.assertAccountAccess(accountId);
     const job = syncJobService.startAccountSync(accountId, { mode });
     return text({
       accountId,
@@ -160,7 +185,7 @@ server.registerTool('mailbox_sync', {
       error: job.error
     });
   } catch (error) {
-    return text({ error: error.message });
+    return text({ error: error.message === 'access_denied' ? 'access_denied' : error.message });
   }
 });
 
@@ -198,7 +223,11 @@ server.registerTool('signature_create', {
   description: 'Create an account-scoped HTML/plain-text signature profile. HTML is sanitized before storage.',
   inputSchema: { accountId: z.string().min(1), name: z.string().min(1), html: z.string(), text: z.string() }
 }, async ({ accountId, name, html, text: bodyText }) => {
-  if (!registry.status(accountId)?.enabled) return text({ error: 'account_not_active' });
+  try {
+    registry.assertAccountAccess(accountId);
+  } catch {
+    return text({ error: 'access_denied' });
+  }
   return text(store.createSignatureProfile({ accountId, name, html, text: bodyText }));
 });
 
@@ -206,6 +235,13 @@ server.registerTool('signature_update', {
   description: 'Update a signature profile. Creates a new version and re-sanitizes HTML.',
   inputSchema: { profileId: z.string().uuid(), name: z.string().optional(), html: z.string().optional(), text: z.string().optional(), enabled: z.boolean().optional() }
 }, async ({ profileId, ...changes }) => {
+  const profile = store.getSignatureProfile(profileId);
+  if (!profile) return text({ error: 'signature_not_found' });
+  try {
+    registry.assertAccountAccess(profile.accountId);
+  } catch {
+    return text({ error: 'access_denied' });
+  }
   try {
     return text(store.updateSignatureProfile(profileId, changes));
   } catch (error) {
@@ -216,17 +252,25 @@ server.registerTool('signature_update', {
 server.registerTool('signature_list', {
   description: 'List enabled signature profiles for one active account.',
   inputSchema: { accountId: z.string().min(1) }
-}, async ({ accountId }) => text(store.listSignatureProfiles(accountId)));
+}, async ({ accountId }) => {
+  try {
+    registry.assertAccountAccess(accountId);
+  } catch {
+    return text({ error: 'access_denied' });
+  }
+  return text(store.listSignatureProfiles(accountId));
+});
 
 server.registerTool('signature_set_default', {
   description: 'Set the default signature profile used for new sends on an account.',
   inputSchema: { accountId: z.string().min(1), profileId: z.string().uuid() }
 }, async ({ accountId, profileId }) => {
   try {
+    registry.assertAccountAccess(accountId);
     store.setDefaultSignature(accountId, profileId);
     return text({ accountId, profileId, status: 'default_set' });
   } catch (error) {
-    return text({ error: error.message });
+    return text({ error: error.message === 'access_denied' ? 'access_denied' : error.message });
   }
 });
 
@@ -242,7 +286,11 @@ server.registerTool('message_preview', {
     quoteDepth: z.number().int().min(1).max(10).optional()
   }
 }, async ({ accountId, newText, newHtml, signatureId, quoteText, quoteHtml, quoteDepth }) => {
-  if (!registry.status(accountId)?.enabled) return text({ error: 'account_not_active' });
+  try {
+    registry.assertAccountAccess(accountId);
+  } catch {
+    return text({ error: 'access_denied' });
+  }
   let signature;
   try {
     signature = store.resolveSignatureForSend({ accountId, explicitId: signatureId });
@@ -264,7 +312,11 @@ server.registerTool('send_approval_create', {
     mime: z.string()
   }
 }, async ({ accountId, to, subject, text: bodyText, html, mime }) => {
-  if (!registry.status(accountId)?.enabled) return text({ error: 'account_not_active' });
+  try {
+    registry.assertAccountAccess(accountId);
+  } catch {
+    return text({ error: 'access_denied' });
+  }
   const payload = { accountId, to, subject, text: bodyText, html, mime };
   const approval = createApproval(payload, { ttlSeconds: 300 });
   pendingApprovals.set(approval.id, { approval, payload });
@@ -286,6 +338,11 @@ server.registerTool('message_send', {
   const entry = pendingApprovals.get(approvalId);
   if (!entry) return text({ error: 'approval_not_found' });
   const normalizedPayload = { accountId: payload.accountId, to: payload.to, subject: payload.subject, text: payload.text, html: payload.html, mime: payload.mime };
+  try {
+    registry.assertAccountAccess(normalizedPayload.accountId);
+  } catch {
+    return text({ error: 'access_denied' });
+  }
   if (!verifyApproval(entry.approval, normalizedPayload)) return text({ error: 'approval_invalid_or_expired' });
   pendingApprovals.delete(approvalId);
   try {

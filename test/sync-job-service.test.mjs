@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteMailStore } from '../src/storage/sqlite-store.mjs';
 import { createSyncJobService } from '../src/mail/sync-job-service.mjs';
+import { activateTestAccount } from './test-principal.mjs';
 
 /**
  * @param {object} overrides
@@ -85,7 +86,7 @@ test('checkpoint resume continues from last UID after restart', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agentmail-sync-resume-'));
   const dbPath = join(dir, 'mail.db');
   const store = new SqliteMailStore(dbPath);
-  store.activateAccount({ id: 'a', email: 'a@example.test', provider: 'imap', secretRef: 'ref' });
+  activateTestAccount(store, { id: 'a', email: 'a@example.test', provider: 'imap', secretRef: 'ref' });
   store.checkpoint({
     accountId: 'a',
     mailboxId: 'inbox',

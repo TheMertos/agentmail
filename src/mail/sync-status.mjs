@@ -102,12 +102,14 @@ export function buildSyncStatus(store, accountId, syncJob = null) {
  * Build sync status for every active account.
  * @param {import('../storage/sqlite-store.mjs').SqliteMailStore} store Mail store.
  * @param {(accountId: string) => object|null} [getJobForAccount]
+ * @param {string[]|null} [accountIds] Optional scoped account ids.
  * @returns {{ accounts: object[] }}
  */
-export function buildSyncStatusAll(store, getJobForAccount = () => null) {
-  const accounts = store.listActiveAccounts().map((account) => {
-    const job = getJobForAccount(account.id);
-    return buildSyncStatus(store, account.id, job);
+export function buildSyncStatusAll(store, getJobForAccount = () => null, accountIds = null) {
+  const ids = accountIds ?? store.listActiveAccounts().map((account) => account.id);
+  const accounts = ids.map((accountId) => {
+    const job = getJobForAccount(accountId);
+    return buildSyncStatus(store, accountId, job);
   });
   return { accounts };
 }

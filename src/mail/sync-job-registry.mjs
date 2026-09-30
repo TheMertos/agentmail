@@ -61,6 +61,13 @@ export class SyncJobRegistry {
       return this.#toPublic(active, true);
     }
 
+    const persisted = this.store?.getActiveSyncJobForAccount(accountId);
+    if (persisted) {
+      this.byAccount.set(accountId, { ...persisted });
+      this.byJobId.set(persisted.jobId, { ...persisted });
+      return this.#toPublic(persisted, true);
+    }
+
     const job = {
       jobId: randomUUID(),
       accountId,
@@ -130,25 +137,18 @@ export class SyncJobRegistry {
   }
 
   /**
-   * Mark interrupted jobs failed and hydrate in-memory maps from SQLite after restart.
+   * Load queued/running jobs from SQLite without mutating their state.
+   * @returns {SyncJobRecord[]}
    */
-  recoverInterruptedJobs() {
-    if (!this.store) return;
+  hydrateActiveSyncJobs() {
+    if (!this.store) return [];
+    const active = [];
     for (const row of this.store.listInterruptedSyncJobs()) {
       const job = { ...row };
-      job.state = 'failed';
-      job.completedAt = new Date().toISOString();
-      job.error = 'interrupted_by_restart';
       this.byAccount.set(job.accountId, job);
       this.byJobId.set(job.jobId, job);
-      this.#persist(job);
+      active.push(job);
     }
-    for (const account of this.store.listActiveAccounts()) {
-      const latest = this.store.getLatestSyncJob(account.id);
-      if (latest && !this.byAccount.has(account.id)) {
-        this.byAccount.set(account.id, { ...latest });
-        this.byJobId.set(latest.jobId, { ...latest });
-      }
-    }
+    return active;
   }
 }

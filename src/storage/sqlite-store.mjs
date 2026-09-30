@@ -10,6 +10,7 @@ const SCHEMA = `
     secret_ref TEXT NOT NULL,
     connection_json TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
+    owner_principal TEXT,
     updated_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS drafts (
@@ -88,7 +89,17 @@ const SCHEMA = `
   );
   CREATE UNIQUE INDEX IF NOT EXISTS sync_jobs_account_active ON sync_jobs(account_id)
     WHERE state IN ('queued', 'running');
+  CREATE TABLE IF NOT EXISTS sync_job_runners (
+    account_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    pid INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+  );
 `;
+
+const ACCOUNT_MIGRATIONS = [
+  'ALTER TABLE active_accounts ADD COLUMN owner_principal TEXT'
+];
 
 const CHECKPOINT_MIGRATIONS = [
   'ALTER TABLE sync_checkpoints ADD COLUMN uid_validity TEXT',
@@ -106,20 +117,100 @@ export class SqliteMailStore {
     this.db = new Database(filename);
     this.db.pragma('journal_mode = WAL');
     this.db.exec(SCHEMA);
+    for (const sql of ACCOUNT_MIGRATIONS) {
+      try { this.db.exec(sql); } catch { /* column may already exist */ }
+    }
     for (const sql of CHECKPOINT_MIGRATIONS) {
       try { this.db.exec(sql); } catch { /* column may already exist */ }
     }
-    this.accountStatement = this.db.prepare(`INSERT INTO active_accounts(account_id, email, provider, secret_ref, connection_json, enabled, updated_at) VALUES (@id, @email, @provider, @secretRef, @connection, 1, @updatedAt) ON CONFLICT(account_id) DO UPDATE SET email=excluded.email, provider=excluded.provider, secret_ref=excluded.secret_ref, connection_json=excluded.connection_json, enabled=1, updated_at=excluded.updated_at`);
+    this.accountInsertStatement = this.db.prepare(`INSERT INTO active_accounts(account_id, email, provider, secret_ref, connection_json, enabled, owner_principal, updated_at) VALUES (@id, @email, @provider, @secretRef, @connection, 1, @ownerPrincipal, @updatedAt)`);
+    this.accountUpdateOwnedStatement = this.db.prepare(`UPDATE active_accounts SET email=@email, provider=@provider, secret_ref=@secretRef, connection_json=@connection, enabled=1, updated_at=@updatedAt WHERE account_id=@id AND owner_principal=@ownerPrincipal`);
+    this.accountClaimLegacyStatement = this.db.prepare(`UPDATE active_accounts SET email=@email, provider=@provider, secret_ref=@secretRef, connection_json=@connection, enabled=1, owner_principal=@ownerPrincipal, updated_at=@updatedAt WHERE account_id=@id AND owner_principal IS NULL`);
     this.accountDisableStatement = this.db.prepare('UPDATE active_accounts SET enabled = 0, updated_at = @updatedAt WHERE account_id = @id');
     this.upsertFolderStatement = this.db.prepare(`INSERT INTO folders(account_id, folder_id, path, metadata_json) VALUES (@accountId, @id, @path, @metadata) ON CONFLICT(account_id, folder_id) DO UPDATE SET path=excluded.path, metadata_json=excluded.metadata_json`);
     this.upsertMessageStatement = this.db.prepare(`INSERT INTO messages(message_key, account_id, mailbox_id, uid, uid_validity, internal_date, flags_json, envelope_json, raw_mime, attachments_json, updated_at) VALUES (@key, @accountId, @mailboxId, @uid, @uidValidity, @internalDate, @flags, @envelope, @raw, @attachments, @updatedAt) ON CONFLICT(message_key) DO UPDATE SET flags_json=excluded.flags_json, internal_date=excluded.internal_date, envelope_json=excluded.envelope_json, raw_mime=excluded.raw_mime, attachments_json=excluded.attachments_json, updated_at=excluded.updated_at`);
     this.checkpointStatement = this.db.prepare(`INSERT INTO sync_checkpoints(account_id, mailbox_id, mode, message_count, last_uid, updated_at, uid_validity, remote_messages, uid_next, local_message_count, status, started_at, error_class, completed_at) VALUES (@accountId, @mailboxId, @mode, @messageCount, @lastUid, @updatedAt, @uidValidity, @remoteMessages, @uidNext, @localMessageCount, @status, @startedAt, @errorClass, @completedAt) ON CONFLICT(account_id, mailbox_id) DO UPDATE SET mode=excluded.mode, message_count=excluded.message_count, last_uid=excluded.last_uid, updated_at=excluded.updated_at, uid_validity=excluded.uid_validity, remote_messages=excluded.remote_messages, uid_next=excluded.uid_next, local_message_count=excluded.local_message_count, status=excluded.status, started_at=COALESCE(sync_checkpoints.started_at, excluded.started_at), error_class=excluded.error_class, completed_at=excluded.completed_at`);
   }
 
-  activateAccount(account) {
+  #mapAccountRow(row) {
+    if (!row) return null;
+    return {
+      id: row.account_id,
+      email: row.email,
+      provider: row.provider,
+      secretRef: row.secret_ref,
+      connection: JSON.parse(row.connection_json),
+      enabled: Boolean(row.enabled),
+      ownerPrincipal: row.owner_principal ?? null
+    };
+  }
+
+  /**
+   * Insert legacy account row without owner (data stays on disk but is not exposed until claimed).
+   * @param {object} account Account metadata.
+   */
+  activateAccountLegacy(account) {
     if (!account?.id || !account.email || !account.provider || !account.secretRef) throw new TypeError('id, email, provider and secretRef are required');
-    this.accountStatement.run({ id: account.id, email: account.email, provider: account.provider, secretRef: account.secretRef, connection: JSON.stringify(account.connection ?? {}), updatedAt: new Date().toISOString() });
+    if (this.getAccount(account.id)) return this.getAccount(account.id);
+    this.accountInsertStatement.run({
+      id: account.id,
+      email: account.email,
+      provider: account.provider,
+      secretRef: account.secretRef,
+      connection: JSON.stringify(account.connection ?? {}),
+      ownerPrincipal: null,
+      updatedAt: new Date().toISOString()
+    });
     return this.getAccount(account.id);
+  }
+
+  activateAccount(account) {
+    if (!account?.ownerPrincipal) throw new TypeError('ownerPrincipal is required; use activateAccountForPrincipal');
+    return this.activateAccountForPrincipal(account, account.ownerPrincipal);
+  }
+
+  /**
+   * Register or update an account for the runtime principal; claim legacy NULL-owner rows on explicit register.
+   * @param {object} account Account metadata.
+   * @param {string} ownerPrincipal Trusted runtime principal.
+   */
+  activateAccountForPrincipal(account, ownerPrincipal) {
+    if (!account?.id || !account.email || !account.provider || !account.secretRef) throw new TypeError('id, email, provider and secretRef are required');
+    if (!ownerPrincipal) throw new TypeError('ownerPrincipal is required');
+    const payload = {
+      id: account.id,
+      email: account.email,
+      provider: account.provider,
+      secretRef: account.secretRef,
+      connection: JSON.stringify(account.connection ?? {}),
+      ownerPrincipal,
+      updatedAt: new Date().toISOString()
+    };
+    const existing = this.getAccount(account.id);
+    if (!existing) {
+      this.accountInsertStatement.run(payload);
+      return this.getAccountForPrincipal(account.id, ownerPrincipal);
+    }
+    if (existing.ownerPrincipal === ownerPrincipal) {
+      this.accountUpdateOwnedStatement.run(payload);
+      return this.getAccountForPrincipal(account.id, ownerPrincipal);
+    }
+    if (existing.ownerPrincipal === null) {
+      const claimed = this.accountClaimLegacyStatement.run(payload);
+      if (claimed.changes === 0) throw new Error('access_denied');
+      return this.getAccountForPrincipal(account.id, ownerPrincipal);
+    }
+    throw new Error('access_denied');
+  }
+
+  getAccountForPrincipal(id, principal) {
+    const row = this.db.prepare('SELECT * FROM active_accounts WHERE account_id = ? AND owner_principal = ?').get(id, principal);
+    return this.#mapAccountRow(row);
+  }
+
+  listActiveAccountsForPrincipal(principal) {
+    return this.db.prepare('SELECT * FROM active_accounts WHERE enabled = 1 AND owner_principal = ? ORDER BY account_id').all(principal)
+      .map((row) => this.#mapAccountRow(row));
   }
 
   deactivateAccount(id) {
@@ -128,12 +219,11 @@ export class SqliteMailStore {
 
   getAccount(id) {
     const row = this.db.prepare('SELECT * FROM active_accounts WHERE account_id = ?').get(id);
-    if (!row) return null;
-    return { id: row.account_id, email: row.email, provider: row.provider, secretRef: row.secret_ref, connection: JSON.parse(row.connection_json), enabled: Boolean(row.enabled) };
+    return this.#mapAccountRow(row);
   }
 
   listActiveAccounts() {
-    return this.db.prepare('SELECT * FROM active_accounts WHERE enabled = 1 ORDER BY account_id').all().map((row) => ({ id: row.account_id, email: row.email, provider: row.provider, secretRef: row.secret_ref, connection: JSON.parse(row.connection_json), enabled: true }));
+    return this.db.prepare('SELECT * FROM active_accounts WHERE enabled = 1 ORDER BY account_id').all().map((row) => this.#mapAccountRow(row));
   }
 
   createDraft(draft) {
@@ -362,6 +452,55 @@ export class SqliteMailStore {
     return this.db.prepare(
       `SELECT * FROM sync_jobs WHERE state IN ('queued', 'running') ORDER BY updated_at`
     ).all().map((row) => this.#mapSyncJobRow(row));
+  }
+
+  /**
+   * Active queued or running job for an account, if any.
+   * @param {string} accountId Account id.
+   * @returns {object|null}
+   */
+  getActiveSyncJobForAccount(accountId) {
+    const row = this.db.prepare(
+      `SELECT * FROM sync_jobs WHERE account_id = ? AND state IN ('queued', 'running') ORDER BY updated_at DESC LIMIT 1`
+    ).get(accountId);
+    return row ? this.#mapSyncJobRow(row) : null;
+  }
+
+  /**
+   * Claim exclusive sync execution for an account across MCP processes.
+   * @param {{ accountId: string, jobId: string, pid: number, isProcessAlive: (pid: number) => boolean }} claim
+   * @returns {boolean} True when this pid may run the job.
+   */
+  tryAcquireSyncJobRunner({ accountId, jobId, pid, isProcessAlive }) {
+    const now = new Date().toISOString();
+    const claim = this.db.transaction(() => {
+      const existing = this.db.prepare(
+        'SELECT account_id, job_id, pid FROM sync_job_runners WHERE account_id = ?'
+      ).get(accountId);
+      if (!existing) {
+        this.db.prepare(
+          'INSERT INTO sync_job_runners(account_id, job_id, pid, updated_at) VALUES (?, ?, ?, ?)'
+        ).run(accountId, jobId, pid, now);
+        return true;
+      }
+      if (existing.job_id === jobId && existing.pid === pid) return true;
+      if (isProcessAlive(existing.pid)) return false;
+      this.db.prepare(
+        'UPDATE sync_job_runners SET job_id = ?, pid = ?, updated_at = ? WHERE account_id = ?'
+      ).run(jobId, pid, now, accountId);
+      return true;
+    });
+    return claim();
+  }
+
+  /**
+   * Release sync runner claim after job completion or failure.
+   * @param {{ accountId: string, jobId: string, pid: number }} release
+   */
+  releaseSyncJobRunner({ accountId, jobId, pid }) {
+    this.db.prepare(
+      'DELETE FROM sync_job_runners WHERE account_id = ? AND job_id = ? AND pid = ?'
+    ).run(accountId, jobId, pid);
   }
 
   #mapSyncJobRow(row) {
