@@ -17,11 +17,22 @@ export function isSelectableMailbox(mailbox) {
  */
 export function isMailboxSyncComplete({ lastUid, uidNext, remoteMessages, localMessageCount }) {
   const last = Number(lastUid ?? 0);
-  if (uidNext != null && !Number.isNaN(Number(uidNext))) {
-    return last >= Number(uidNext) - 1;
+  const hasReliableUidNext = uidNext != null && !Number.isNaN(Number(uidNext));
+  const hasReliableCounts = remoteMessages != null && localMessageCount != null;
+
+  if (hasReliableCounts && Number(localMessageCount) < Number(remoteMessages)) {
+    return false;
   }
-  if (remoteMessages != null && localMessageCount != null) {
-    return Number(localMessageCount) >= Number(remoteMessages);
+
+  const uidComplete = hasReliableUidNext ? last >= Number(uidNext) - 1 : null;
+  const countComplete = hasReliableCounts
+    ? Number(localMessageCount) >= Number(remoteMessages)
+    : null;
+
+  if (uidComplete !== null && countComplete !== null) {
+    return uidComplete && countComplete;
   }
+  if (uidComplete !== null) return uidComplete;
+  if (countComplete !== null) return countComplete;
   return false;
 }
