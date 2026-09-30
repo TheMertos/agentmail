@@ -195,6 +195,7 @@ export class SqliteMailStore {
     this.accountDisableStatement = this.db.prepare('UPDATE active_accounts SET enabled = 0, updated_at = @updatedAt WHERE account_id = @id');
     this.upsertFolderStatement = this.db.prepare(`INSERT INTO folders(account_id, folder_id, path, metadata_json) VALUES (@accountId, @id, @path, @metadata) ON CONFLICT(account_id, folder_id) DO UPDATE SET path=excluded.path, metadata_json=excluded.metadata_json`);
     this.upsertMessageStatement = this.db.prepare(`INSERT INTO messages(message_key, account_id, mailbox_id, uid, uid_validity, internal_date, flags_json, envelope_json, raw_mime, attachments_json, updated_at) VALUES (@key, @accountId, @mailboxId, @uid, @uidValidity, @internalDate, @flags, @envelope, @raw, @attachments, @updatedAt) ON CONFLICT(message_key) DO UPDATE SET flags_json=excluded.flags_json, internal_date=excluded.internal_date, envelope_json=excluded.envelope_json, raw_mime=excluded.raw_mime, attachments_json=excluded.attachments_json, updated_at=excluded.updated_at`);
+    this.updateMessageFlagsStatement = this.db.prepare(`UPDATE messages SET flags_json = ?, updated_at = ? WHERE account_id = ? AND mailbox_id = ? AND uid = ? AND uid_validity = ?`);
     this.checkpointStatement = this.db.prepare(`INSERT INTO sync_checkpoints(account_id, mailbox_id, mode, message_count, last_uid, updated_at, uid_validity, remote_messages, uid_next, local_message_count, status, started_at, error_class, completed_at) VALUES (@accountId, @mailboxId, @mode, @messageCount, @lastUid, @updatedAt, @uidValidity, @remoteMessages, @uidNext, @localMessageCount, @status, @startedAt, @errorClass, @completedAt) ON CONFLICT(account_id, mailbox_id) DO UPDATE SET mode=excluded.mode, message_count=excluded.message_count, last_uid=excluded.last_uid, updated_at=excluded.updated_at, uid_validity=excluded.uid_validity, remote_messages=excluded.remote_messages, uid_next=excluded.uid_next, local_message_count=excluded.local_message_count, status=excluded.status, started_at=COALESCE(sync_checkpoints.started_at, excluded.started_at), error_class=excluded.error_class, completed_at=excluded.completed_at`);
   }
 
@@ -413,6 +414,32 @@ export class SqliteMailStore {
 
   async upsertFolder(folder) {
     this.upsertFolderStatement.run({ ...folder, metadata: JSON.stringify(folder) });
+  }
+
+  /**
+   * Replace stored flags for one account, mailbox, UID, and UIDVALIDITY. Raw MIME is left unchanged.
+   * @param {{ accountId: string, mailboxId: string, uid: number, uidValidity: string|number, flags: string[] }} identity Message identity and replacement flags.
+   * @returns {Promise<boolean>} True when one matching row was updated.
+   */
+  async updateMessageFlags({ accountId, mailboxId, uid, uidValidity, flags }) {
+    const numericUid = Number(uid);
+    if (!accountId || !mailboxId || !Number.isInteger(numericUid) || numericUid <= 0 || uidValidity == null || uidValidity === '') {
+      return false;
+    }
+    const nextFlags = JSON.stringify(Array.isArray(flags) ? flags : []);
+    const existing = this.db.prepare(
+      'SELECT flags_json FROM messages WHERE account_id = ? AND mailbox_id = ? AND uid = ? AND uid_validity = ?'
+    ).get(accountId, mailboxId, numericUid, String(uidValidity));
+    if (!existing || existing.flags_json === nextFlags) return false;
+    const result = this.updateMessageFlagsStatement.run(
+      nextFlags,
+      new Date().toISOString(),
+      accountId,
+      mailboxId,
+      numericUid,
+      String(uidValidity)
+    );
+    return result.changes === 1;
   }
 
   async upsertMessage(message) {

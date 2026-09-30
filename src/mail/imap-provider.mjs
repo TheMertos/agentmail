@@ -296,6 +296,72 @@ export class ImapProvider {
   }
 
   /**
+   * Copy IMAP flags into a plain array.
+   * @param {unknown} flags Flags from ImapFlow.
+   * @returns {string[]} Flag list. Empty when the server sent none.
+   */
+  #flagList(flags) {
+    if (flags instanceof Set || Array.isArray(flags)) return [...flags];
+    return [];
+  }
+
+  /**
+   * Yield UID and FLAGS for one UID query. The FETCH attributes are only uid and flags.
+   * @param {string} query Explicit UID list.
+   * @param {object} status Mailbox STATUS used for UIDVALIDITY.
+   * @returns {AsyncGenerator<{ uid: number, uidValidity: string, flags: string[] }>} Flag rows.
+   */
+  async *#iterateFlags(query, status) {
+    const iterator = this.client.fetch(query, { uid: true, flags: true }, { uid: true })[Symbol.asyncIterator]();
+    try {
+      while (true) {
+        const next = await this.#deadline(iterator.next(), 'fetch');
+        if (next.done) return;
+        const message = next.value;
+        yield {
+          uid: message.uid,
+          uidValidity: String(status.uidValidity),
+          flags: this.#flagList(message.flags)
+        };
+      }
+    } finally {
+      const returned = iterator.return?.();
+      if (returned && typeof returned.catch === 'function') returned.catch(() => {});
+    }
+  }
+
+  /**
+   * Fetch UID and FLAGS for explicit UIDs. Does not request source, body, envelope, or bodyStructure and does not STORE.
+   * @param {object} mailbox Mailbox with path.
+   * @param {{ uids?: number[], uidValidity?: string|number, batchSize?: number }} [options] Expected UIDVALIDITY and batch size.
+   * @returns {AsyncGenerator<{ uid: number, uidValidity: string, flags: string[] }>} Flag rows for the requested UIDs.
+   */
+  async *fetchFlags(mailbox, { uids = [], uidValidity, batchSize = 100 } = {}) {
+    const explicit = uids.map((uid) => Number(uid)).filter((uid) => Number.isInteger(uid) && uid > 0);
+    if (explicit.length === 0) return;
+    if (!mailbox?.path || uidValidity == null || uidValidity === '') throw new Error('identity_mismatch');
+    await this.connect();
+    const lock = await this.#deadline(
+      this.client.getMailboxLock(mailbox.path, { acquireTimeout: this.operationTimeoutMs }),
+      'lock'
+    );
+    try {
+      const status = await this.#deadline(
+        this.client.status(mailbox.path, { uidValidity: true }),
+        'status'
+      );
+      if (String(status?.uidValidity) !== String(uidValidity)) throw new Error('identity_mismatch');
+      const size = Math.max(1, Number(batchSize) || 100);
+      for (let index = 0; index < explicit.length; index += size) {
+        const query = explicit.slice(index, index + size).join(',');
+        yield* this.#iterateFlags(query, status);
+      }
+    } finally {
+      this.#release(lock);
+    }
+  }
+
+  /**
    * Fetch one bounded UID batch, or an explicit UID list for hole fill.
    * Each lock, STATUS, and message wait is bounded. A stall closes the socket.
    * @param {object} mailbox Mailbox with path and id.

@@ -71,6 +71,56 @@ function stalledSpan(attemptedRange, plannedRange) {
 }
 
 /**
+ * Copy a provider flag list into an array.
+ * @param {unknown} flags Flags from a flags-only fetch.
+ * @returns {string[]} Replacement flag list.
+ */
+function flagList(flags) {
+  if (flags instanceof Set || Array.isArray(flags)) return [...flags];
+  return [];
+}
+
+/**
+ * Replace local flags for messages already stored in one mailbox.
+ * Uses a flags-only provider fetch. A UIDVALIDITY mismatch or stall leaves the mirror unchanged for the remaining UIDs.
+ * @param {object} input accountId, mailbox, provider, store, mode, uidValidity, batchSize.
+ * @returns {Promise<void>}
+ */
+async function reconcileMailboxFlags({ accountId, mailbox, provider, store, mode, uidValidity, batchSize }) {
+  if (mode !== 'incremental') return;
+  if (typeof provider.fetchFlags !== 'function' || typeof store.updateMessageFlags !== 'function') return;
+  if (uidValidity == null || uidValidity === '') return;
+  const size = Math.max(1, Number(batchSize) || 100);
+  const uids = (store.listMessageUids?.(accountId, mailbox.id) ?? [])
+    .map((uid) => Number(uid))
+    .filter((uid) => Number.isInteger(uid) && uid > 0);
+  for (let index = 0; index < uids.length; index += size) {
+    const chunk = uids.slice(index, index + size);
+    try {
+      for await (const row of provider.fetchFlags(mailbox, {
+        uids: chunk,
+        uidValidity: String(uidValidity),
+        batchSize: size
+      })) {
+        const uid = Number(row?.uid);
+        if (!chunk.includes(uid)) continue;
+        if (String(row?.uidValidity) !== String(uidValidity)) continue;
+        await store.updateMessageFlags({
+          accountId,
+          mailboxId: mailbox.id,
+          uid,
+          uidValidity: String(uidValidity),
+          flags: flagList(row.flags)
+        });
+      }
+    } catch (error) {
+      if (error?.message === 'identity_mismatch' || isImapStall(error)) return;
+      throw error;
+    }
+  }
+}
+
+/**
  * Synchronize one account with resumable per-batch checkpoints.
  * A stalled fetch reconnects from the last stored UID. A single UID that times out
  * twice is skipped so the checkpoint still moves. Gmail UID holes are filled from
@@ -104,6 +154,15 @@ export async function syncAccount({ accountId, provider, store, mode = 'incremen
     }
 
     if (isMailboxUpToDate(checkpoint, remote, mode)) {
+      await reconcileMailboxFlags({
+        accountId,
+        mailbox,
+        provider,
+        store,
+        mode,
+        uidValidity: remote.uidValidity ?? checkpoint?.uidValidity ?? null,
+        batchSize
+      });
       skippedFolders += 1;
       await store.checkpoint?.({
         accountId,
@@ -308,6 +367,16 @@ export async function syncAccount({ accountId, provider, store, mode = 'incremen
         }
       }
     }
+
+    await reconcileMailboxFlags({
+      accountId,
+      mailbox,
+      provider,
+      store,
+      mode,
+      uidValidity,
+      batchSize
+    });
 
     const localMessageCount = store.countMessagesInMailbox?.(accountId, mailbox.id) ?? knownUids.size;
     const reconciled = reconcileMailboxCompletion({
