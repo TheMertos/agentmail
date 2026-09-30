@@ -41,8 +41,9 @@ This includes Inbox, Sent, Drafts, Archive, Trash, Spam, custom folders, and pro
 - MCP does not start, enqueue, or wait for mailbox sync. The worker performs IMAP sync on its own interval.
 - `sync_status(accountId)` and `sync_status_all()` return folder counts, checkpoints, errors, and last successful sync from the local mirror; never credentials. They do not download mail.
 - `message_search` searches the local complete mirror and reports whether sync is still incomplete.
-- `message_read` reads from local storage by default; `refresh=true` is explicit. It does not set IMAP \Seen.
-- `message_mark_read(messageKey)` is the only MCP operation that writes provider `\Seen`, and only for that exact accessible message.
+- `message_read` reads the exact local message, then writes provider `\Seen` with UID STORE +FLAGS `\Seen`. If that mark fails, the read fails closed and local flags stay unchanged.
+- `message_mark_read(messageKey)` writes provider `\Seen` for that exact accessible message.
+- `message_mark_unread(messageKey)` writes UID STORE -FLAGS `\Seen` only when explicitly called for that exact message. Passive sync, IDLE, search, flags reconciliation, attachment extraction, and header-only operations do not STORE flags.
 
 ## Resource limits
 

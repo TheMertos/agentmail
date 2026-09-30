@@ -409,6 +409,29 @@ export class ImapProvider {
    * @returns {Promise<true>} True when the server accepted the flag.
    */
   async markRead(mailbox, uid, uidValidity) {
+    return this.#storeSeen(mailbox, uid, uidValidity, 'add');
+  }
+
+  /**
+   * Clear \\Seen for one UID. This is the only provider method that issues UID STORE -FLAGS \\Seen.
+   * @param {string} mailbox Selected mailbox path.
+   * @param {number|string} uid Message UID.
+   * @param {string|number} uidValidity Expected UIDVALIDITY. STORE is not sent when it differs.
+   * @returns {Promise<true>} True when the server accepted the flag.
+   */
+  async markUnread(mailbox, uid, uidValidity) {
+    return this.#storeSeen(mailbox, uid, uidValidity, 'remove');
+  }
+
+  /**
+   * STORE \\Seen for one UID after the mailbox UIDVALIDITY matches.
+   * @param {string} mailbox Selected mailbox path.
+   * @param {number|string} uid Message UID.
+   * @param {string|number} uidValidity Expected UIDVALIDITY.
+   * @param {'add'|'remove'} direction Add or remove \\Seen.
+   * @returns {Promise<true>} True when the server accepted the flag.
+   */
+  async #storeSeen(mailbox, uid, uidValidity, direction) {
     const numericUid = Number(uid);
     if (!mailbox || !Number.isInteger(numericUid) || numericUid <= 0 || uidValidity == null || uidValidity === '') {
       throw new Error('identity_mismatch');
@@ -424,11 +447,12 @@ export class ImapProvider {
         'status'
       );
       if (String(status?.uidValidity) !== String(uidValidity)) throw new Error('identity_mismatch');
+      const writer = direction === 'remove' ? this.client.messageFlagsRemove : this.client.messageFlagsAdd;
       const stored = await this.#deadline(
-        this.client.messageFlagsAdd(String(numericUid), ['\\Seen'], { uid: true }),
+        writer.call(this.client, String(numericUid), ['\\Seen'], { uid: true }),
         'store'
       );
-      if (!stored) throw new Error('mark_read_failed');
+      if (!stored) throw new Error(direction === 'remove' ? 'mark_unread_failed' : 'mark_read_failed');
       return true;
     } finally {
       this.#release(lock);

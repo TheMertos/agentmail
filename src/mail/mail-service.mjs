@@ -96,38 +96,27 @@ export class MailService {
    * @returns {Promise<{ messageKey: string, accountId: string, mailboxId: string, uid: number, uidValidity: string, flags: string[] }>} Marked identity.
    */
   async markRead(messageKey, store) {
-    if (typeof messageKey !== 'string' || messageKey.trim() === '') throw new Error('message_key_required');
-    if (!store?.getMessage) throw new Error('mail_store_unavailable');
-    const message = store.getMessage(messageKey);
-    if (!message) throw new Error('source_message_not_found');
-    if (message.key !== messageKey || canonicalMessageKey(message) !== messageKey) throw new Error('identity_mismatch');
-    const account = typeof this.accountRegistry?.assertAccountAccess === 'function'
-      ? this.accountRegistry.assertAccountAccess(message.accountId)
-      : this.accountRegistry?.get?.(message.accountId);
-    if (!account) throw new Error('account_not_found');
-    if (!this.leaseBroker?.acquire) throw new Error('credential_lease_unavailable');
-    if (!this.providerFactory) throw new Error('provider_unavailable');
-    const mailbox = mailboxPathFor(store, message);
-    const lease = await this.leaseBroker.acquire({ accountId: message.accountId, purpose: 'imap-mark-read', fields: ['imap'] });
-    assertLeaseSafe(lease);
-    let provider;
-    try {
-      provider = await this.providerFactory({ account, lease, operation: 'imap-mark-read' });
-      await provider.markRead(mailbox, message.uid, message.uidValidity);
-      const flags = flagsWithSeen(message.flags);
-      await store.upsertMessage({ ...message, flags });
-      return {
-        messageKey,
-        accountId: message.accountId,
-        mailboxId: message.mailboxId,
-        uid: message.uid,
-        uidValidity: String(message.uidValidity),
-        flags
-      };
-    } finally {
-      await provider?.close?.();
-      await this.leaseBroker.release?.(lease);
-    }
+    return changeSeenFlag(this, messageKey, store, {
+      purpose: 'imap-mark-read',
+      operation: 'imap-mark-read',
+      write: (provider, mailbox, message) => provider.markRead(mailbox, message.uid, message.uidValidity),
+      flagsFor: flagsWithSeen
+    });
+  }
+
+  /**
+   * Clear provider \\Seen for one exact mirrored message. Passive sync does not call this.
+   * @param {string} messageKey Exact local message key.
+   * @param {object} store Mail store used to resolve account, mailbox, and UID.
+   * @returns {Promise<{ messageKey: string, accountId: string, mailboxId: string, uid: number, uidValidity: string, flags: string[] }>} Unmarked identity.
+   */
+  async markUnread(messageKey, store) {
+    return changeSeenFlag(this, messageKey, store, {
+      purpose: 'imap-mark-unread',
+      operation: 'imap-mark-unread',
+      write: (provider, mailbox, message) => provider.markUnread(mailbox, message.uid, message.uidValidity),
+      flagsFor: flagsWithoutSeen
+    });
   }
 
   async sendMime(accountId, mime) {
@@ -156,6 +145,49 @@ export class MailService {
 }
 
 /**
+ * Resolve one exact message and write or clear provider \\Seen. Local flags change only after the provider accepts the STORE.
+ * @param {MailService} service Mail service with registry, lease broker, and provider factory.
+ * @param {string} messageKey Exact local message key.
+ * @param {object} store Mail store used to resolve account, mailbox, and UID.
+ * @param {{ purpose: string, operation: string, write: Function, flagsFor: (flags: unknown) => string[] }} change Provider write and local flag projection.
+ * @returns {Promise<{ messageKey: string, accountId: string, mailboxId: string, uid: number, uidValidity: string, flags: string[] }>} Updated identity.
+ */
+async function changeSeenFlag(service, messageKey, store, { purpose, operation, write, flagsFor }) {
+  if (typeof messageKey !== 'string' || messageKey.trim() === '') throw new Error('message_key_required');
+  if (!store?.getMessage) throw new Error('mail_store_unavailable');
+  const message = store.getMessage(messageKey);
+  if (!message) throw new Error('source_message_not_found');
+  if (message.key !== messageKey || canonicalMessageKey(message) !== messageKey) throw new Error('identity_mismatch');
+  const account = typeof service.accountRegistry?.assertAccountAccess === 'function'
+    ? service.accountRegistry.assertAccountAccess(message.accountId)
+    : service.accountRegistry?.get?.(message.accountId);
+  if (!account) throw new Error('account_not_found');
+  if (!service.leaseBroker?.acquire) throw new Error('credential_lease_unavailable');
+  if (!service.providerFactory) throw new Error('provider_unavailable');
+  const mailbox = mailboxPathFor(store, message);
+  const lease = await service.leaseBroker.acquire({ accountId: message.accountId, purpose, fields: ['imap'] });
+  assertLeaseSafe(lease);
+  let provider;
+  try {
+    provider = await service.providerFactory({ account, lease, operation });
+    await write(provider, mailbox, message);
+    const flags = flagsFor(message.flags);
+    await store.upsertMessage({ ...message, flags });
+    return {
+      messageKey,
+      accountId: message.accountId,
+      mailboxId: message.mailboxId,
+      uid: message.uid,
+      uidValidity: String(message.uidValidity),
+      flags
+    };
+  } finally {
+    await provider?.close?.();
+    await service.leaseBroker.release?.(lease);
+  }
+}
+
+/**
  * Rebuild the mirror key from stored account, mailbox, UIDVALIDITY, and UID.
  * @param {{ accountId: string, mailboxId: string, uidValidity: string|number, uid: number|string }} message Stored message.
  * @returns {string} Canonical message key.
@@ -174,6 +206,16 @@ function flagsWithSeen(flags) {
   if (list.some((flag) => String(flag).toLowerCase() === '\\seen')) return list;
   list.push('\\Seen');
   return list;
+}
+
+/**
+ * Return a copy of flags without \\Seen.
+ * @param {unknown} flags Stored flags.
+ * @returns {string[]} Flags after the explicit unread mark.
+ */
+function flagsWithoutSeen(flags) {
+  const list = Array.isArray(flags) ? flags : [];
+  return list.filter((flag) => String(flag).toLowerCase() !== '\\seen');
 }
 
 /**

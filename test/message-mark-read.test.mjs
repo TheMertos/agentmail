@@ -8,6 +8,8 @@ import { MailService } from '../src/mail/mail-service.mjs';
 import { createPrincipalRegistry } from '../src/security/principal-scope.mjs';
 import * as z from 'zod/v4';
 import { createMessageMarkReadHandler, messageMarkReadDescription, messageMarkReadInputSchema } from '../src/mcp/message-mark-read-tools.mjs';
+import { createMessageMarkUnreadHandler, messageMarkUnreadDescription, messageMarkUnreadInputSchema } from '../src/mcp/message-mark-unread-tools.mjs';
+import { createMessageReadHandler, messageReadDescription, messageReadInputSchema } from '../src/mcp/message-read-tools.mjs';
 import { activateTestAccount, TEST_PRINCIPAL } from './test-principal.mjs';
 
 const MESSAGE_KEY = 'info:inbox:42:7';
@@ -71,6 +73,11 @@ function serviceFor(store, registry, { failValidity = false } = {}) {
     providerFactory: async () => ({
       markRead: async (mailbox, uid, uidValidity) => {
         calls.push({ op: 'markRead', mailbox, uid, uidValidity });
+        if (failValidity || String(uidValidity) !== '42') throw new Error('identity_mismatch');
+        return true;
+      },
+      markUnread: async (mailbox, uid, uidValidity) => {
+        calls.push({ op: 'markUnread', mailbox, uid, uidValidity });
         if (failValidity || String(uidValidity) !== '42') throw new Error('identity_mismatch');
         return true;
       },
@@ -167,9 +174,118 @@ test('message_mark_read selects the stored mailbox path and skips STORE on UIDVA
   closeFixture(store, dir);
 });
 
-test('passive sync, IDLE, search, and attachment extraction never call STORE', () => {
+test('message_read stores \\Seen after resolving the exact local message', async () => {
+  const { dir, store, registry, messageKey } = openFixture({ flags: ['\\Flagged'] });
+  const { service, calls } = serviceFor(store, registry);
+  const handler = createMessageReadHandler({ store, registry, mailService: service });
+  const payload = JSON.parse((await handler({ messageKey })).content[0].text);
+  assert.equal(payload.key, MESSAGE_KEY);
+  assert.equal(payload.raw.includes('Hi'), true);
+  assert.equal(payload.flags.includes('\\Seen'), true);
+  assert.equal(payload.flags.includes('\\Flagged'), true);
+  assert.deepEqual(calls.filter((call) => call.op === 'markRead'), [{
+    op: 'markRead',
+    mailbox: 'INBOX',
+    uid: 7,
+    uidValidity: '42'
+  }]);
+  assert.equal(calls.some((call) => call.op === 'markUnread'), false);
+  assert.equal(store.getMessage(messageKey).flags.includes('\\Seen'), true);
+  closeFixture(store, dir);
+});
+
+test('message_read fails closed when the provider mark fails', async () => {
+  const { dir, store, registry } = openFixture();
+  const { service, calls } = serviceFor(store, registry, { failValidity: true });
+  const handler = createMessageReadHandler({ store, registry, mailService: service });
+  const payload = JSON.parse((await handler({ messageKey: MESSAGE_KEY })).content[0].text);
+  assert.equal(payload.error, 'identity_mismatch');
+  assert.equal(payload.raw, undefined);
+  assert.equal(store.getMessage(MESSAGE_KEY).flags.includes('\\Seen'), false);
+  assert.equal(calls.filter((call) => call.op === 'markRead').length, 1);
+  closeFixture(store, dir);
+});
+
+test('message_read fails closed on a missing key, unknown message, or denied account', async () => {
+  const { dir, store, registry } = openFixture();
+  const { service, calls } = serviceFor(store, registry);
+  const handler = createMessageReadHandler({ store, registry, mailService: service });
+  const missing = JSON.parse((await handler({})).content[0].text);
+  const unknown = JSON.parse((await handler({ messageKey: 'info:inbox:42:99' })).content[0].text);
+  assert.equal(missing.error, 'message_key_required');
+  assert.equal(unknown.error, 'source_message_not_found');
+  const other = createPrincipalRegistry(store, 'other-user');
+  const deniedHandler = createMessageReadHandler({ store, registry: other, mailService: service });
+  const denied = JSON.parse((await deniedHandler({ messageKey: MESSAGE_KEY })).content[0].text);
+  assert.equal(denied.error, 'access_denied');
+  assert.equal(calls.some((call) => call.op === 'markRead'), false);
+  assert.equal(store.getMessage(MESSAGE_KEY).flags.includes('\\Seen'), false);
+  closeFixture(store, dir);
+});
+
+test('message_mark_unread removes \\Seen only for the exact account, mailbox, and message', async () => {
+  const { dir, store, registry, messageKey } = openFixture({ flags: ['\\Seen', '\\Flagged'] });
+  const { service, calls } = serviceFor(store, registry);
+  const handler = createMessageMarkUnreadHandler({ store, registry, mailService: service });
+  const payload = JSON.parse((await handler({ messageKey })).content[0].text);
+  assert.equal(payload.messageKey, MESSAGE_KEY);
+  assert.equal(payload.uid, 7);
+  assert.equal(payload.uidValidity, '42');
+  assert.equal(payload.flags.includes('\\Seen'), false);
+  assert.equal(payload.flags.includes('\\Flagged'), true);
+  assert.deepEqual(calls.filter((call) => call.op === 'markUnread'), [{
+    op: 'markUnread',
+    mailbox: 'INBOX',
+    uid: 7,
+    uidValidity: '42'
+  }]);
+  assert.equal(calls.some((call) => call.op === 'markRead'), false);
+  assert.equal(store.getMessage(messageKey).flags.includes('\\Seen'), false);
+  assert.equal(payload.raw, undefined);
+  closeFixture(store, dir);
+});
+
+test('message_mark_unread fails closed when identity or access does not match', async () => {
+  const { dir, store, registry } = openFixture({ flags: ['\\Seen'] });
+  const { service, calls } = serviceFor(store, registry);
+  const handler = createMessageMarkUnreadHandler({ store, registry, mailService: service });
+  const missing = JSON.parse((await handler({})).content[0].text);
+  const unknown = JSON.parse((await handler({ messageKey: 'info:inbox:42:99' })).content[0].text);
+  assert.equal(missing.error, 'message_key_required');
+  assert.equal(unknown.error, 'source_message_not_found');
+  store.db.prepare('UPDATE messages SET uid = ? WHERE message_key = ?').run(8, MESSAGE_KEY);
+  const mismatch = JSON.parse((await handler({ messageKey: MESSAGE_KEY })).content[0].text);
+  assert.equal(mismatch.error, 'identity_mismatch');
+  const other = createPrincipalRegistry(store, 'other-user');
+  const denied = JSON.parse((await createMessageMarkUnreadHandler({
+    store,
+    registry: other,
+    mailService: service
+  })({ messageKey: MESSAGE_KEY })).content[0].text);
+  assert.equal(denied.error, 'access_denied');
+  assert.equal(calls.some((call) => call.op === 'markUnread'), false);
+  assert.equal(store.getMessage(MESSAGE_KEY).flags.includes('\\Seen'), true);
+  closeFixture(store, dir);
+});
+
+test('message_mark_unread skips STORE and local flag removal when UIDVALIDITY mismatches', async () => {
+  const { dir, store, registry } = openFixture({ flags: ['\\Seen'], path: 'INBOX.Work' });
+  const mismatch = serviceFor(store, registry, { failValidity: true });
+  await assert.rejects(() => mismatch.service.markUnread(MESSAGE_KEY, store), /identity_mismatch/);
+  assert.deepEqual(mismatch.calls.filter((call) => call.op === 'markUnread'), [{
+    op: 'markUnread',
+    mailbox: 'INBOX.Work',
+    uid: 7,
+    uidValidity: '42'
+  }]);
+  assert.equal(store.getMessage(MESSAGE_KEY).flags.includes('\\Seen'), true);
+  closeFixture(store, dir);
+});
+
+test('passive sync, IDLE, search, flags reconciliation, and attachment extraction never call STORE', () => {
   const files = [
     '../src/mail/sync-engine.mjs',
+    '../src/mail/mailbox-sync.mjs',
     '../src/mail/imap-idle-connection.mjs',
     '../src/mail/inbox-idle-watcher.mjs',
     '../src/mail/message-search.mjs',
@@ -178,27 +294,35 @@ test('passive sync, IDLE, search, and attachment extraction never call STORE', (
   for (const file of files) {
     const source = readFileSync(new URL(file, import.meta.url), 'utf8');
     assert.equal(source.includes('messageFlagsAdd'), false, file);
+    assert.equal(source.includes('messageFlagsRemove'), false, file);
+    assert.equal(source.includes('markRead('), false, file);
+    assert.equal(source.includes('markUnread('), false, file);
   }
   const imap = readFileSync(new URL('../src/mail/imap-provider.mjs', import.meta.url), 'utf8');
   assert.equal(imap.match(/messageFlagsAdd/g)?.length, 1);
+  assert.equal(imap.match(/messageFlagsRemove/g)?.length, 1);
 });
 
-test('message_read stays local and message_mark_read is the only Seen writer in the MCP schema', () => {
+test('message_read writes Seen, message_mark_unread removes Seen, and message_mark_read stays explicit', () => {
   const server = readFileSync(new URL('../src/mcp/server.mjs', import.meta.url), 'utf8');
-  const readStart = server.indexOf("registerTool('message_read'");
-  const readEnd = server.indexOf("registerTool('attachment_upload'");
-  const readBlock = server.slice(readStart, readEnd);
-  assert.equal(readBlock.includes('markRead'), false);
-  assert.equal(readBlock.includes('messageFlagsAdd'), false);
-  assert.match(readBlock, /does not set IMAP \\\\Seen/);
+  assert.equal(server.includes("registerTool('message_read'"), true);
   assert.equal(server.includes("registerTool('message_mark_read'"), true);
+  assert.equal(server.includes("registerTool('message_mark_unread'"), true);
+  assert.match(messageReadDescription, /STORE \+FLAGS \\Seen/);
+  assert.match(messageReadDescription, /fails closed/);
   assert.match(messageMarkReadDescription, /STORE \+FLAGS \\Seen/);
-  const parsed = z.object(messageMarkReadInputSchema).safeParse({ messageKey: 'info:inbox:42:7' });
-  assert.equal(parsed.success, true);
+  assert.match(messageMarkUnreadDescription, /STORE -FLAGS \\Seen/);
+  assert.equal(z.object(messageReadInputSchema).safeParse({ messageKey: 'info:inbox:42:7' }).success, true);
+  assert.equal(z.object(messageReadInputSchema).safeParse({ messageKey: '' }).success, false);
+  assert.equal(z.object(messageMarkReadInputSchema).safeParse({ messageKey: 'info:inbox:42:7' }).success, true);
   assert.equal(z.object(messageMarkReadInputSchema).safeParse({}).success, false);
-  assert.equal(z.object(messageMarkReadInputSchema).safeParse({ messageKey: '' }).success, false);
+  assert.equal(z.object(messageMarkUnreadInputSchema).safeParse({ messageKey: 'info:inbox:42:7' }).success, true);
+  assert.equal(z.object(messageMarkUnreadInputSchema).safeParse({ messageKey: '' }).success, false);
   const headless = readFileSync(new URL('../docs/HEADLESS-MCP.md', import.meta.url), 'utf8');
   const fullSync = readFileSync(new URL('../docs/FULL-SYNC.md', import.meta.url), 'utf8');
-  assert.match(headless, /message_read[\s\S]*does not set IMAP \\Seen/);
-  assert.match(fullSync, /message_mark_read/);
+  assert.match(headless, /message_read[\s\S]*STORE \+FLAGS \\Seen/);
+  assert.match(headless, /message_mark_unread[\s\S]*STORE -FLAGS \\Seen/);
+  assert.match(fullSync, /message_read[\s\S]*\\Seen/);
+  assert.match(fullSync, /message_mark_unread/);
+  assert.equal(/message_read[\s\S]{0,240}does not set IMAP \\Seen/.test(headless), false);
 });

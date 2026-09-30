@@ -10,6 +10,8 @@ import {
   stagedAttachmentRefSchema
 } from './attachment-tools.mjs';
 import { createMessageMarkReadHandler, messageMarkReadDescription, messageMarkReadInputSchema } from './message-mark-read-tools.mjs';
+import { createMessageMarkUnreadHandler, messageMarkUnreadDescription, messageMarkUnreadInputSchema } from './message-mark-unread-tools.mjs';
+import { createMessageReadHandler, messageReadDescription, messageReadInputSchema } from './message-read-tools.mjs';
 import { createMessageSearchHandler, messageSearchDescription, messageSearchInputSchema } from './message-search-tools.mjs';
 import { createPreviewBinding } from './preview-binding.mjs';
 import { createMessageSendHandler } from './send-preflight.mjs';
@@ -20,7 +22,9 @@ import { createMailRuntime } from '../runtime/mail-runtime.mjs';
 const { store, registry, mailService } = createMailRuntime(loadConfig());
 const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ store, registry });
 const messageSearch = createMessageSearchHandler({ store, registry });
+const messageRead = createMessageReadHandler({ store, registry, mailService });
 const messageMarkRead = createMessageMarkReadHandler({ store, registry, mailService });
+const messageMarkUnread = createMessageMarkUnreadHandler({ store, registry, mailService });
 const attachmentsApi = createAttachmentHandlers({ store, registry });
 const server = new McpServer({ name: 'agentmail', version: '0.1.0' });
 const pendingApprovals = new Map();
@@ -74,24 +78,19 @@ server.registerTool('message_search', {
 }, async (args) => messageSearch(args));
 
 server.registerTool('message_read', {
-  description: 'Read one complete locally mirrored message by its exact message key. It does not set IMAP \\Seen.',
-  inputSchema: { messageKey: z.string().min(1) }
-}, async ({ messageKey }) => {
-  const accountId = messageKey.split(':', 1)[0];
-  try {
-    registry.assertAccountAccess(accountId);
-  } catch {
-    return text({ error: 'access_denied' });
-  }
-  await store.backfillMessageAttachments(messageKey);
-  const message = store.getMessage(messageKey);
-  return text(message ? { ...message, raw: message.raw } : { error: 'source_message_not_found' });
-});
+  description: messageReadDescription,
+  inputSchema: messageReadInputSchema
+}, async (args) => messageRead(args));
 
 server.registerTool('message_mark_read', {
   description: messageMarkReadDescription,
   inputSchema: messageMarkReadInputSchema
 }, async (args) => messageMarkRead(args));
+
+server.registerTool('message_mark_unread', {
+  description: messageMarkUnreadDescription,
+  inputSchema: messageMarkUnreadInputSchema
+}, async (args) => messageMarkUnread(args));
 
 server.registerTool('attachment_upload', {
   description: attachmentUploadDescription,

@@ -33,7 +33,7 @@ Expose narrow, auditable tools rather than a generic mail shell:
 - `sync_status_all` — read-only local progress for every active account
 - `message_search`
 - `message_list`
-- `message_read` — one locally mirrored message by exact message key. It does not set IMAP \Seen.
+- `message_read` — explicit content read of one locally mirrored message by exact message key. After the local message resolves, it writes UID STORE +FLAGS \Seen. If the provider mark fails, the read fails closed and local flags stay unchanged.
 - `message_raw`
 - `thread_read`
 - `attachment_list`
@@ -54,7 +54,8 @@ Expose narrow, auditable tools rather than a generic mail shell:
 
 ### Organization
 
-- `message_mark_read` — UID STORE +FLAGS \Seen for one exact messageKey after an account-access check. Passive sync, IDLE, search, indexing, attachment extraction, and message_read do not write \Seen.
+- `message_mark_read` — UID STORE +FLAGS \Seen for one exact messageKey after an account-access check.
+- `message_mark_unread` — UID STORE -FLAGS \Seen for one exact messageKey after an account-access check. It runs only when explicitly called. Passive sync, IDLE, search, flags reconciliation, attachment extraction, and header-only operations do not STORE flags.
 - `message_flag`
 - `message_move`
 - `message_archive`

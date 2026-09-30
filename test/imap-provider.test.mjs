@@ -195,6 +195,10 @@ function providerWithFlagSpy({ uidValidity = 42, stored = true } = {}) {
       calls.push({ op: 'store', range, flags, options });
       return stored;
     },
+    messageFlagsRemove: async (range, flags, options) => {
+      calls.push({ op: 'store-remove', range, flags, options });
+      return stored;
+    },
     fetch: () => (async function* () {})(),
     fetchOne: async () => ({ source: Buffer.from('mime') }),
     search: async () => [1],
@@ -222,14 +226,40 @@ test('markRead does not STORE when mailbox UIDVALIDITY differs', async () => {
   const { provider, calls } = providerWithFlagSpy({ uidValidity: 99 });
   await assert.rejects(() => provider.markRead('INBOX', 7, '42'), /identity_mismatch/);
   assert.equal(calls.some((call) => call.op === 'store'), false);
+  assert.equal(calls.some((call) => call.op === 'store-remove'), false);
 });
 
-test('fetch, search, and readByUid never STORE \\Seen', async () => {
+test('markUnread stores -FLAGS \\Seen for one UID only when UIDVALIDITY matches', async () => {
+  const { provider, calls } = providerWithFlagSpy();
+  const ok = await provider.markUnread('INBOX', 7, '42');
+  assert.equal(ok, true);
+  assert.deepEqual(calls.filter((call) => call.op === 'store-remove'), [{
+    op: 'store-remove',
+    range: '7',
+    flags: ['\\Seen'],
+    options: { uid: true }
+  }]);
+  assert.equal(calls.some((call) => call.op === 'store'), false);
+  assert.equal(calls.filter((call) => call.op === 'lock')[0].path, 'INBOX');
+});
+
+test('markUnread does not STORE when mailbox UIDVALIDITY differs', async () => {
+  const { provider, calls } = providerWithFlagSpy({ uidValidity: 99 });
+  await assert.rejects(() => provider.markUnread('INBOX', 7, '42'), /identity_mismatch/);
+  assert.equal(calls.some((call) => call.op === 'store-remove'), false);
+  assert.equal(calls.some((call) => call.op === 'store'), false);
+});
+
+test('fetch, search, readByUid, and fetchFlags never STORE \\Seen', async () => {
   const { provider, calls } = providerWithFlagSpy();
   for await (const _message of provider.fetchMessages({ id: 'INBOX', path: 'INBOX' }, { uids: [7] })) {
     // passive fetch
   }
+  for await (const _row of provider.fetchFlags({ id: 'INBOX', path: 'INBOX' }, { uids: [7], uidValidity: '42' })) {
+    // header-only flags
+  }
   await provider.searchUids({ path: 'INBOX' });
   await provider.readByUid('INBOX', 7);
   assert.equal(calls.some((call) => call.op === 'store'), false);
+  assert.equal(calls.some((call) => call.op === 'store-remove'), false);
 });

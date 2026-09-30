@@ -182,7 +182,8 @@ test('incremental sync mirrors external read and unread flags without fetching b
       if (String(options.uidValidity) !== '42') return;
       yield { uid: 7, uidValidity: '42', flags: ['\\Flagged'] };
     },
-    async markRead() { stores.push('markRead'); }
+    async markRead() { stores.push('markRead'); },
+    async markUnread() { stores.push('markUnread'); }
   };
 
   await syncAccount({ accountId: 'a', provider, store, mode: 'incremental', batchSize: 50 });
@@ -229,7 +230,8 @@ test('incremental sync removes \\Seen when the provider cleared it and keeps new
         yield { uid, uidValidity: options.uidValidity, flags: uid === 1 ? [] : ['\\Seen'] };
       }
     },
-    async markRead() { throw new Error('store_not_allowed'); }
+    async markRead() { throw new Error('store_not_allowed'); },
+    async markUnread() { throw new Error('store_not_allowed'); }
   };
 
   await syncAccount({ accountId: 'a', provider, store, mode: 'incremental', batchSize: 2 });
