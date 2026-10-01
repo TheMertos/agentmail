@@ -4,7 +4,7 @@ import { assertAttachmentSetLimits, attachmentError, validateAttachmentUpload } 
 import { assembleOutgoingMime } from '../mail/outgoing-mime.mjs';
 
 /** MCP description for attachment_upload. */
-export const attachmentUploadDescription = 'Stage an outgoing attachment from base64 content for one active account. Host paths are rejected and never read. Returns id, filename, content type, size, and sha256 only. Path traversal, executable names, credential-like names, disallowed types, oversized payloads, and plaintext secrets are rejected.';
+export const attachmentUploadDescription = 'Stage an outgoing attachment from base64 content or from filePath inside an approved root. Host paths are rejected unless filePath is a regular file inside that root. Arbitrary paths and paths from mail content are rejected and never read. Returns id, filename, content type, size, and sha256 only. Path traversal, symlink escapes, executable names, credential-like names, disallowed types, oversized payloads, and plaintext secrets are rejected.';
 
 const approvedAttachmentShape = {
   id: z.string().uuid(),
@@ -20,7 +20,7 @@ export const stagedAttachmentRefSchema = z.object({ id: z.string().uuid() });
 /** Zod schema for approval-bound attachment metadata. */
 export const approvedAttachmentSchema = z.object(approvedAttachmentShape);
 
-/** Zod input schema for attachment_upload. A path field is accepted only so it can be rejected. */
+/** Zod input schema for attachment_upload. Only filePath may name a file, and only inside an approved root. */
 export const attachmentUploadInputSchema = {
   accountId: z.string().min(1),
   filename: z.string().min(1),
@@ -119,10 +119,10 @@ function sha256(content) {
 
 /**
  * Build principal-scoped attachment handlers for draft, preview, approval, and send.
- * @param {{ store: object, registry: { principal: string, assertAccountAccess: Function } }} deps Store and principal registry.
+ * @param {{ store: object, registry: { principal: string, assertAccountAccess: Function }, attachmentRoots?: string[] }} deps Store, principal registry, and approved file roots.
  * @returns {object}
  */
-export function createAttachmentHandlers({ store, registry }) {
+export function createAttachmentHandlers({ store, registry, attachmentRoots = [] }) {
   /**
    * Load one staged attachment owned by this principal and account.
    * @param {string} accountId Account id.
@@ -169,7 +169,7 @@ export function createAttachmentHandlers({ store, registry }) {
   function attachmentUpload(args) {
     try {
       registry.assertAccountAccess(args?.accountId);
-      const validated = validateAttachmentUpload(args);
+      const validated = validateAttachmentUpload(args, { roots: attachmentRoots });
       return text(store.stageAttachment({
         accountId: args.accountId,
         ownerPrincipal: registry.principal,

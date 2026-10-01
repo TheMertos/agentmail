@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -10,14 +10,14 @@ const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const scriptPath = join(repoRoot, 'tools', 'hermes-agentmail-mcp.sh');
 
 /**
- * Run the Hermes MCP wrapper with a fake `docker` on PATH.
- * @param {{ hermesHome?: string, pathPrefix?: string, fakeDockerEnv?: Record<string, string> }} options
+ * Run the Hermes MCP wrapper.
+ * @param {{ hermesHome?: string, pathPrefix?: string, extraEnv?: Record<string, string> }} options
  */
-function runWrapper({ hermesHome, pathPrefix = '', fakeDockerEnv = {} } = {}) {
+function runWrapper({ hermesHome, pathPrefix = '', extraEnv = {} } = {}) {
   const env = {
     ...process.env,
     PATH: pathPrefix ? `${pathPrefix}:${process.env.PATH}` : process.env.PATH,
-    ...fakeDockerEnv
+    ...extraEnv
   };
   delete env.HERMES_INSTANCE_NAME;
   if (hermesHome !== undefined) env.HERMES_HOME = hermesHome;
@@ -26,30 +26,18 @@ function runWrapper({ hermesHome, pathPrefix = '', fakeDockerEnv = {} } = {}) {
 }
 
 /**
- * @param {{ containerInspectFails?: boolean }} options
+ * Place a fake node and a docker binary that fails if invoked.
+ * @returns {{ binDir: string }}
  */
-function fakeDockerBin({ containerInspectFails = false } = {}) {
-  const binDir = mkdtempSync(join(tmpdir(), 'agentmail-fake-docker-'));
-  const logPath = join(binDir, 'docker-invocation.log');
+function fakeNodeBin() {
+  const binDir = mkdtempSync(join(tmpdir(), 'agentmail-fake-node-'));
+  const fakeNode = join(binDir, 'node');
   const fakeDocker = join(binDir, 'docker');
-  const inspectExit = containerInspectFails ? 1 : 0;
-  writeFileSync(
-    fakeDocker,
-    `#!/usr/bin/env bash
-log="${logPath}"
-if [[ "$1" == "container" && "$2" == "inspect" ]]; then
-  exit ${inspectExit}
-fi
-if [[ "$1" == "exec" ]]; then
-  printf '%s\\n' "$*" > "$log"
-  exit 0
-fi
-printf '%s\\n' "$*" > "$log"
-exit 0
-`
-  );
+  writeFileSync(fakeNode, '#!/usr/bin/env bash\nexit 0\n');
+  writeFileSync(fakeDocker, '#!/usr/bin/env bash\necho "docker must not be called" >&2\nexit 1\n');
+  chmodSync(fakeNode, 0o755);
   chmodSync(fakeDocker, 0o755);
-  return { binDir, logPath };
+  return { binDir };
 }
 
 test('hermes MCP wrapper fails when HERMES_HOME is missing', () => {
@@ -83,42 +71,18 @@ test('hermes MCP wrapper rejects invalid derived principal characters', () => {
   assert.match(result.stderr, /invalid characters/);
 });
 
-test('hermes MCP wrapper fails when profile container is missing', () => {
-  const { binDir } = fakeDockerBin({ containerInspectFails: true });
+test('hermes MCP wrapper does not require a Docker container', () => {
+  const { binDir } = fakeNodeBin();
+  const home = mkdtempSync(join(tmpdir(), 'agentmail-hermes-home-'));
   const result = runWrapper({
     hermesHome: '/home/user/.hermes/profiles/mert',
-    pathPrefix: binDir
+    pathPrefix: binDir,
+    extraEnv: {
+      HOME: home,
+      SECRET_FABRIC_URL: 'http://127.0.0.1:3000',
+      SECRET_FABRIC_API_TOKEN: 'tok'
+    }
   });
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /AgentMail container not found: agentmail-mert/);
-  assert.match(result.stderr, /provision-agentmail-profile/);
-});
-
-test('hermes MCP wrapper targets profile-derived container and principal', () => {
-  const { binDir, logPath } = fakeDockerBin();
-  const result = runWrapper({ hermesHome: '/home/user/.hermes/profiles/mert', pathPrefix: binDir });
   assert.equal(result.status, 0, result.stderr);
-
-  const invocation = readFileSync(logPath, 'utf8');
-  assert.match(invocation, /-e AGENTMAIL_PRINCIPAL=mert/);
-  assert.match(invocation, /-e SECRET_FABRIC_PRINCIPAL=mert/);
-  assert.match(invocation, /agentmail-mert node src\/mcp\/server\.mjs/);
-});
-
-test('hermes MCP wrapper uses agentmail-default for default Hermes home', () => {
-  const { binDir, logPath } = fakeDockerBin();
-  const result = runWrapper({ hermesHome: '/home/user/.hermes', pathPrefix: binDir });
-  assert.equal(result.status, 0, result.stderr);
-
-  const invocation = readFileSync(logPath, 'utf8');
-  assert.match(invocation, /-e AGENTMAIL_PRINCIPAL=default/);
-  assert.match(invocation, /-e SECRET_FABRIC_PRINCIPAL=default/);
-  assert.match(invocation, /agentmail-default node src\/mcp\/server\.mjs/);
-});
-
-test('hermes MCP wrapper trims HERMES_HOME and accepts trailing slash on default home', () => {
-  const { binDir, logPath } = fakeDockerBin();
-  const result = runWrapper({ hermesHome: '  /home/user/.hermes/  ', pathPrefix: binDir });
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(readFileSync(logPath, 'utf8'), /agentmail-default/);
+  assert.doesNotMatch(result.stderr, /container not found/);
 });

@@ -23,11 +23,11 @@ SECRET_FABRIC_API_TOKEN=...
 
 Compose sets `AGENTMAIL_PROFILE` (default `default` for plain `docker compose build`; provisioning sets it to the profile name) and sets `AGENTMAIL_PRINCIPAL` and `SECRET_FABRIC_PRINCIPAL` to that same profile value. Those principals are not read from separate host variables, so an MCP client cannot supply a different principal through Compose.
 
-Hermes attaches MCP through the stdio wrapper, which injects `AGENTMAIL_PRINCIPAL` and `SECRET_FABRIC_PRINCIPAL` from inherited `HERMES_HOME` into a short-lived `docker exec` process running `node src/mcp/server.mjs` only. The MCP server still refuses to start when either principal is missing, empty, or mismatched.
+Hermes attaches MCP through the stdio wrapper, which injects `AGENTMAIL_PRINCIPAL` and `SECRET_FABRIC_PRINCIPAL` from inherited `HERMES_HOME` and runs `node src/mcp/server.mjs` directly. The MCP server still refuses to start when either principal is missing, empty, or mismatched, or when `AGENTMAIL_SERVICE_MODE=native` lacks a matching profile and absolute attachment roots.
 
 ## Hermes MCP stdio wrapper
 
-Hermes should start AgentMail MCP through `tools/hermes-agentmail-mcp.sh`, not by calling `docker exec` directly. The wrapper is the only supported MCP entrypoint. It requires inherited `HERMES_HOME` (non-empty after trim) and derives the canonical principal:
+Hermes should start AgentMail MCP through `tools/hermes-agentmail-mcp.sh`. The wrapper is the supported MCP entrypoint. It requires inherited `HERMES_HOME` (non-empty after trim) and derives the canonical principal:
 
 | `HERMES_HOME` | Canonical principal |
 | --- | --- |
@@ -37,15 +37,15 @@ Hermes should start AgentMail MCP through `tools/hermes-agentmail-mcp.sh`, not b
 
 Derived names must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`. There is no fallback to OS usernames, `HERMES_INSTANCE_NAME`, or MCP tool arguments.
 
-MCP security contract: the principal comes from `HERMES_HOME`. Host paths are rejected and never read. `attachment_upload` returns metadata only. Approval is required before `message_send`. mail_account_register does not overwrite an existing account, secretRef, or connection.
+MCP security contract: the principal comes from `HERMES_HOME`. Host paths are rejected unless `filePath` stays inside `AGENTMAIL_ATTACHMENT_ROOTS`. `attachment_upload` returns metadata only. Approval is required before `message_send`. mail_account_register does not overwrite an existing account, secretRef, or connection.
 
-On success it resolves the target container as `agentmail-<principal>` (for example `agentmail-mert` or `agentmail-default`). There is no shared fallback container name. If that container does not exist on the host, the wrapper exits with a clear error and does not attach MCP.
+On success the wrapper runs Node in the repository with `AGENTMAIL_SERVICE_MODE=native`, the derived principal, SecretFabric variables from the environment, and a profile data directory under `$XDG_DATA_HOME/agentmail/<principal>` or `$HOME/.local/share/agentmail/<principal>`. It does not call `docker exec`.
 
 ```text
-docker exec -i \
-  -e AGENTMAIL_PRINCIPAL=<derived> \
-  -e SECRET_FABRIC_PRINCIPAL=<derived> \
-  agentmail-<derived> node src/mcp/server.mjs
+AGENTMAIL_PRINCIPAL=<derived> \
+SECRET_FABRIC_PRINCIPAL=<derived> \
+AGENTMAIL_SERVICE_MODE=native \
+node src/mcp/server.mjs
 ```
 
 ## Profile-isolated containers

@@ -1,0 +1,19 @@
+[Unit]
+Description=AgentMail native MCP host service for profile %i
+Documentation=file://%h/agent-mail-client/docs/COMPOSE-TRANSITION.md
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/agent-mail-client
+Environment=HOME=%h
+Environment=AGENTMAIL_SERVICE_MODE=native
+Environment=AGENTMAIL_NATIVE_HOLD=1
+Environment=AGENTMAIL_PROFILE=%i
+EnvironmentFile=-%h/.config/agentmail/%i.env
+ExecStart=%h/agent-mail-client/tools/agentmail-native-mcp.sh --service %i
+Restart=on-failure
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

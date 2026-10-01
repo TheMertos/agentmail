@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /** Per-file, count, and total-byte caps for staged outgoing attachments. */
 export const ATTACHMENT_LIMITS = Object.freeze({
@@ -38,7 +40,8 @@ const CREDENTIAL_NAME = [
   /^(passwd|shadow|authorized_keys|known_hosts)$/i
 ];
 
-const PATH_KEYS = ['path', 'filePath', 'hostPath', 'filepath', 'sourcePath'];
+const REJECTED_PATH_KEYS = ['path', 'hostPath', 'filepath', 'sourcePath', 'messagePath', 'attachmentPath'];
+const MAIL_CONTENT_KEYS = ['raw', 'mime', 'sourceMessage', 'messageBody', 'body', 'html', 'text'];
 
 /** Filename extension to the single content type it may declare. */
 const EXTENSION_TYPES = new Map([
@@ -72,13 +75,82 @@ export function attachmentError(code) {
 }
 
 /**
- * Reject host filesystem paths. Upload accepts bytes only.
+ * Reject arbitrary path keys and any path carried in mail content.
+ * `filePath` is handled separately and only inside an approved root.
  * @param {object} input Tool or validator input.
  */
-function assertNoHostPath(input) {
+function assertNoUnapprovedPath(input) {
   if (!input || typeof input !== 'object') throw attachmentError('attachment_invalid');
-  for (const key of PATH_KEYS) {
+  for (const key of REJECTED_PATH_KEYS) {
     if (input[key] != null && input[key] !== '') throw attachmentError('attachment_path_rejected');
+  }
+  for (const key of MAIL_CONTENT_KEYS) {
+    if (input[key] != null && input[key] !== '') throw attachmentError('attachment_path_rejected');
+  }
+}
+
+/**
+ * True when `candidate` is a path strictly inside `root`.
+ * @param {string} root Absolute directory.
+ * @param {string} candidate Absolute path.
+ * @returns {boolean}
+ */
+function isContained(root, candidate) {
+  const rel = relative(root, candidate);
+  return rel.length > 0 && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
+/**
+ * Read a regular file only when every path component stays inside an approved root.
+ * @param {string} filePath Absolute caller path.
+ * @param {string[]} roots Approved absolute directories.
+ * @returns {Buffer}
+ */
+function readApprovedFile(filePath, roots) {
+  if (typeof filePath !== 'string' || filePath.length === 0 || filePath.includes('\0') || !isAbsolute(filePath)) {
+    throw attachmentError('attachment_path_rejected');
+  }
+  if (!Array.isArray(roots) || roots.length === 0) throw attachmentError('attachment_path_rejected');
+  let realRoots;
+  try {
+    realRoots = roots.map((root) => {
+      if (typeof root !== 'string' || !isAbsolute(root)) throw attachmentError('attachment_path_rejected');
+      const real = realpathSync(root);
+      if (!statSync(real).isDirectory()) throw attachmentError('attachment_path_rejected');
+      return real;
+    });
+  } catch (error) {
+    if (error?.code === 'attachment_path_rejected') throw error;
+    throw attachmentError('attachment_path_rejected');
+  }
+  const normalized = resolve(filePath);
+  const matched = realRoots.find((root) => isContained(root, normalized));
+  if (!matched) throw attachmentError('attachment_path_rejected');
+  let current = matched;
+  try {
+    for (const part of relative(matched, normalized).split(sep)) {
+      if (!part || part === '.' || part === '..') throw attachmentError('attachment_path_rejected');
+      current = join(current, part);
+      if (lstatSync(current).isSymbolicLink()) {
+        const target = realpathSync(current);
+        const inside = realRoots.some((root) => target !== root && isContained(root, target));
+        if (!inside) throw attachmentError('attachment_path_rejected');
+        current = target;
+      }
+    }
+    const fd = openSync(current, 'r');
+    try {
+      const info = fstatSync(fd);
+      if (!info.isFile()) throw attachmentError('attachment_path_rejected');
+      if (info.size <= 0) throw attachmentError('attachment_invalid');
+      if (info.size > ATTACHMENT_LIMITS.maxBytes) throw attachmentError('attachment_too_large');
+      return readFileSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  } catch (error) {
+    if (String(error?.code ?? '').startsWith('attachment_')) throw error;
+    throw attachmentError('attachment_path_rejected');
   }
 }
 
@@ -243,18 +315,33 @@ function assertMagic(content, contentType) {
 }
 
 /**
+ * Split `AGENTMAIL_ATTACHMENT_ROOTS` on colons.
+ * @param {string|undefined} value Colon-separated absolute directories.
+ * @returns {string[]}
+ */
+export function parseAttachmentRoots(value) {
+  if (value == null || String(value).trim() === '') return [];
+  return String(value).split(':').map((part) => part.trim()).filter(Boolean);
+}
+
+/**
  * Validate one uploaded attachment and return its bytes plus public metadata fields.
- * @param {object} input Upload fields. `path` is rejected and never read.
+ * `filePath` is read only from `options.roots`. Other path keys and mail content are rejected.
+ * @param {object} input Upload fields.
+ * @param {{ roots?: string[] }} [options] Approved absolute roots for `filePath`.
  * @returns {{ filename: string, contentType: string, size: number, sha256: string, content: Buffer }}
  */
-export function validateAttachmentUpload(input) {
-  assertNoHostPath(input);
+export function validateAttachmentUpload(input, options = {}) {
+  assertNoUnapprovedPath(input);
   assertSafeFilename(input.filename);
   if (typeof input.contentType !== 'string' || !ALLOWED_CONTENT_TYPES.has(input.contentType)) {
     throw attachmentError('attachment_type_rejected');
   }
   assertExtensionMatchesType(input.filename, input.contentType);
-  const content = decodeBase64(input.contentBase64);
+  const hasFile = input.filePath != null && input.filePath !== '';
+  const hasBytes = input.contentBase64 != null && input.contentBase64 !== '';
+  if (hasFile && hasBytes) throw attachmentError('attachment_path_rejected');
+  const content = hasFile ? readApprovedFile(input.filePath, options.roots ?? []) : decodeBase64(input.contentBase64);
   if (content.length === 0) throw attachmentError('attachment_invalid');
   if (content.length > ATTACHMENT_LIMITS.maxBytes) throw attachmentError('attachment_too_large');
   assertNoPlaintextSecret(content, input.contentType);

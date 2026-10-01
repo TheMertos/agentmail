@@ -44,18 +44,18 @@ Interactive mail is remote-only:
 - **Approval-gated sending.** `message_send` accepts only an `approvalId`. The server sends the exact preview stored for that principal and account. Callers cannot supply body, MIME, recipients, or attachment bytes on the send call.
 - **Signatures.** Account-scoped HTML and plain-text signature profiles are sanitized before storage. Preview and approval bind the selected or default signature version. A changed signature invalidates the approval.
 - **Nested blockquotes.** Reply composition wraps the quoted source in one canonical `<blockquote class="gmail_quote">`. Outer blockquotes that wrap the entire source fragment are removed so quotes are not double-wrapped. Nested blockquotes inside the message content are kept. `quoteDepth` is an integer from 1 to 10 and sets the plain-text `>` depth.
-- **Attachments.** `attachment_upload` accepts base64 content only. Host paths are rejected and never read. Draft, preview, and send bind filename, content type, size, and sha256. A changed attachment invalidates the approval. Source-message attachments are not copied into a reply.
+- **Attachments.** `attachment_upload` accepts base64 content or a `filePath` inside `AGENTMAIL_ATTACHMENT_ROOTS`. Host paths are rejected unless that path is a regular file whose realpath stays inside an approved root. Arbitrary paths and paths taken from mail content are rejected and never read. Draft, preview, and send bind filename, content type, size, and sha256. A changed attachment invalidates the approval. Source-message attachments are not copied into a reply.
 - **Sent read-back.** After SMTP accepts the message, AgentMail appends the same MIME to the Sent mailbox and reads that UID back. The send fails with `sent_copy_failed`, `sent_copy_unverified`, or `sent_copy_verification_failed` when the stored copy is missing or does not match the reviewed MIME.
 - **`remote_timeout`.** A stalled IMAP connect, lock, or search is reported as `remote_timeout`. The tool does not fall back to cached messages.
 
 Runtime shape:
 
 - **Runtime:** headless Node.js MCP server (`node src/mcp/server.mjs`).
-- **Transport:** stdio for local Hermes integration (`docker exec`); Streamable HTTP only on authenticated private interfaces.
+- **Transport:** stdio for local Hermes integration (`tools/hermes-agentmail-mcp.sh` runs `node src/mcp/server.mjs`); Streamable HTTP only on authenticated private interfaces.
 - **Mail engine:** live IMAP/SMTP providers behind `MailService`.
 - **Calendar:** remote CalDAV stays in AgentCalendar. This repository does not sync or store events.
 - **Credential control plane:** Hermes/SecretFabric handles account onboarding and short-lived credential leases. AgentMail stores opaque references, not secrets.
-- **Deployment:** Docker Compose runs only the MCP server. Background sync and IMAP IDLE are not started. The named data volume is kept for non-sensitive account metadata.
+- **Deployment:** the supported host service is a systemd user unit plus the Hermes wrapper, both running Node directly. Docker Compose remains an optional transition and is not removed. Background sync and IMAP IDLE are not started. Existing named volumes are left in place.
 
 ## Mail operations
 
@@ -81,7 +81,7 @@ Summaries, classification, and rewriting stay in the MCP client. AgentMail retur
 
 ## Development status
 
-AgentMail is a real email client first and an AI assistant second. The mail-client parity requirements are tracked in [`docs/MAIL-CLIENT-PARITY.md`](docs/MAIL-CLIENT-PARITY.md). Interactive search, read, flag changes, and send query IMAP or SMTP directly. Background sync and IMAP IDLE are disabled. `sync_status` and `sync_status_all` report `mode: remote-only` and do not read a local message mirror. The headless MCP server also supports drafts, signatures, nested blockquotes, staged outgoing attachments, approval-gated send, and Sent read-back. `attachment_upload` accepts base64 content only; draft, preview, and send bind filename, content type, size, and sha256, and a changed attachment invalidates the approval. Source attachments are not inherited by reply.
+AgentMail is a real email client first and an AI assistant second. The mail-client parity requirements are tracked in [`docs/MAIL-CLIENT-PARITY.md`](docs/MAIL-CLIENT-PARITY.md). Interactive search, read, flag changes, and send query IMAP or SMTP directly. Background sync and IMAP IDLE are disabled. `sync_status` and `sync_status_all` report `mode: remote-only` and do not read a local message mirror. The headless MCP server also supports drafts, signatures, nested blockquotes, staged outgoing attachments, approval-gated send, and Sent read-back. `attachment_upload` accepts base64 content or an allowlisted `filePath`; draft, preview, and send bind filename, content type, size, and sha256, and a changed attachment invalidates the approval. Source attachments are not inherited by reply.
 
 See [`docs/PRODUCT.md`](docs/PRODUCT.md) for scope, threat model, and acceptance criteria. Deployment and live-search notes are in [`docs/HEADLESS-MCP.md`](docs/HEADLESS-MCP.md), [`docs/CONFIG.md`](docs/CONFIG.md), and [`docs/AUTO-SYNC.md`](docs/AUTO-SYNC.md).
 
@@ -91,7 +91,7 @@ Credentials are brokered through the existing SecretFabric installation. AgentMa
 
 The deployed runtime is one MCP server process:
 
-- The Docker service runs `node src/mcp/server.mjs`. Background IMAP synchronization and Inbox IDLE are disabled. The named data volume is not deleted.
+- The native host service and the Hermes wrapper run `node src/mcp/server.mjs`. Background IMAP synchronization and Inbox IDLE are disabled. Docker volumes are not deleted.
 - Hermes starts interactive tool calls against that server. The wrapper derives `AGENTMAIL_PRINCIPAL` from the trusted `HERMES_HOME`; callers cannot select a different principal through tool arguments.
 - For every IMAP or SMTP operation, the MCP runtime asks SecretFabric for a short-lived lease using the account's opaque `secretRef`, a purpose, and field paths such as `incoming.username` and `incoming.password`.
 - SecretFabric returns credentials only in process memory. The lease is released after the operation and private fields are destroyed.
@@ -111,7 +111,9 @@ AgentMail follows IMAP flag semantics on the live server:
 
 ## MCP security contract
 
-The Hermes MCP wrapper derives the runtime principal only from inherited `HERMES_HOME` and injects it as `AGENTMAIL_PRINCIPAL`. MCP tool arguments cannot choose or impersonate that principal. Host paths are rejected by `attachment_upload` and are never read; the tool returns metadata only (id, filename, content type, size, sha256). Approval is required before `message_send`. mail_account_register does not overwrite an existing account, `secretRef`, or connection; there is no silent migration of those fields.
+The Hermes MCP wrapper derives the runtime principal only from inherited `HERMES_HOME` and injects it as `AGENTMAIL_PRINCIPAL`. MCP tool arguments cannot choose or impersonate that principal. Host paths are rejected by `attachment_upload` unless `filePath` is a regular file inside an approved root; arbitrary paths and paths from mail content are never read. The tool returns metadata only (id, filename, content type, size, sha256). Approval is required before `message_send`. mail_account_register does not overwrite an existing account, `secretRef`, or connection; there is no silent migration of those fields.
+
+Native install and the Compose transition are in [`docs/COMPOSE-TRANSITION.md`](docs/COMPOSE-TRANSITION.md).
 
 ## Non-goals
 

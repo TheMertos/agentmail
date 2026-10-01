@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import * as z from 'zod/v4';
 import { loadConfig } from '../config.mjs';
+import { assertNativeService } from '../runtime/native-service.mjs';
 import {
   attachmentUploadDescription,
   attachmentUploadInputSchema,
@@ -19,13 +20,20 @@ import { createSyncStatusHandlers } from './sync-status-tools.mjs';
 import { redactSensitiveText, redactToolError } from '../security/redact.mjs';
 import { createMailRuntime } from '../runtime/mail-runtime.mjs';
 
-const { store, registry, mailService } = createMailRuntime(loadConfig());
+const config = String(process.env.AGENTMAIL_SERVICE_MODE ?? '').trim() === 'native'
+  ? assertNativeService(process.env)
+  : loadConfig();
+const { store, registry, mailService } = createMailRuntime(config);
 const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ registry });
 const messageSearch = createMessageSearchHandler({ registry, mailService });
 const messageRead = createMessageReadHandler({ registry, mailService });
 const messageMarkRead = createMessageMarkReadHandler({ registry, mailService });
 const messageMarkUnread = createMessageMarkUnreadHandler({ registry, mailService });
-const attachmentsApi = createAttachmentHandlers({ store, registry });
+const attachmentsApi = createAttachmentHandlers({
+  store,
+  registry,
+  attachmentRoots: config.attachmentRoots
+});
 const server = new McpServer({ name: 'agentmail', version: '0.1.0' });
 const pendingApprovals = new Map();
 const pendingPreviews = new Map();
@@ -281,7 +289,23 @@ server.registerTool('message_send', {
   }
 }, async (args) => messageSend(args, mailService));
 
+/**
+ * Hold the native host service open without starting sync, IDLE, or an MCP stdio session.
+ * @returns {Promise<void>}
+ */
+function holdNativeService() {
+  return new Promise((resolve) => {
+    const stop = () => resolve();
+    process.once('SIGTERM', stop);
+    process.once('SIGINT', stop);
+  });
+}
+
 async function main() {
+  if (process.env.AGENTMAIL_NATIVE_HOLD === '1') {
+    await holdNativeService();
+    return;
+  }
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

@@ -1,3 +1,5 @@
+import { parseAttachmentRoots } from './mail/attachment-policy.mjs';
+
 /** Profile/principal name used for Docker resource isolation (fail closed). */
 export const AGENTMAIL_PROFILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -30,6 +32,10 @@ export function loadConfig(env = process.env) {
   if (principal !== secretFabricPrincipal) {
     throw new Error('AGENTMAIL_PRINCIPAL must match SECRET_FABRIC_PRINCIPAL');
   }
+  const serviceMode = String(env.AGENTMAIL_SERVICE_MODE ?? 'docker').trim();
+  if (serviceMode !== 'native' && serviceMode !== 'docker') {
+    throw new Error('AGENTMAIL_SERVICE_MODE must be native or docker');
+  }
   return {
     dbPath: env.AGENTMAIL_DB_PATH,
     syncIntervalSeconds: interval,
@@ -38,7 +44,9 @@ export function loadConfig(env = process.env) {
     principal,
     secretFabricPrincipal,
     secretFabricUrl: env.SECRET_FABRIC_URL,
-    secretFabricApiToken: env.SECRET_FABRIC_API_TOKEN
+    secretFabricApiToken: env.SECRET_FABRIC_API_TOKEN,
+    serviceMode,
+    attachmentRoots: parseAttachmentRoots(env.AGENTMAIL_ATTACHMENT_ROOTS)
   };
 }
 
