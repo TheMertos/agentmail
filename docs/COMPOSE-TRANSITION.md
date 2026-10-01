@@ -41,7 +41,7 @@ Hermes MCP:
 hermes mcp add agentmail -- /home/mert/agent-mail-client/tools/hermes-agentmail-mcp.sh
 ```
 
-The wrapper still needs `SECRET_FABRIC_URL` and `SECRET_FABRIC_API_TOKEN` in the environment Hermes inherits.
+When `SECRET_FABRIC_URL` or `SECRET_FABRIC_API_TOKEN` is empty, the wrapper fills only the empty values from `~/.config/agentmail/<profile>.env` (`$XDG_CONFIG_HOME/agentmail/<profile>.env` when `XDG_CONFIG_HOME` is set). Non-empty inherited values stay in place. The process still exits if either value is missing after that load, and it never prints secret values.
 
 ## Compose
 

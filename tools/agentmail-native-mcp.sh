@@ -38,6 +38,10 @@ if ! validate_agentmail_profile_name "${principal}"; then
   exit 1
 fi
 
+if ! load_missing_secret_fabric_env "${principal}" "agentmail"; then
+  exit 1
+fi
+
 if [[ -z "${SECRET_FABRIC_URL:-}" ]]; then
   echo "SECRET_FABRIC_URL is required" >&2
   exit 1

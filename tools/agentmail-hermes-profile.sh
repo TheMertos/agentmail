@@ -65,6 +65,53 @@ agentmail_compose_project_for_principal() {
   printf 'agentmail-%s' "${principal}"
 }
 
+# Fill empty SECRET_FABRIC_URL and SECRET_FABRIC_API_TOKEN from the profile env file.
+# Non-empty inherited values are kept. Secret values are never printed.
+# @param $1 profile name
+# @param $2 config directory name under ~/.config
+load_missing_secret_fabric_env() {
+  local profile="${1:?profile required}"
+  local app="${2:?app required}"
+  if [[ -n "${SECRET_FABRIC_URL:-}" && -n "${SECRET_FABRIC_API_TOKEN:-}" ]]; then
+    return 0
+  fi
+  if [[ -z "${HOME:-}" && -z "${XDG_CONFIG_HOME:-}" ]]; then
+    return 0
+  fi
+  local env_file="${XDG_CONFIG_HOME:-${HOME}/.config}/${app}/${profile}.env"
+  if [[ ! -e "${env_file}" ]]; then
+    return 0
+  fi
+  if [[ ! -f "${env_file}" || ! -r "${env_file}" ]]; then
+    echo "cannot read SecretFabric env file" >&2
+    return 1
+  fi
+  local line key value
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
+    if [[ ! "${line}" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      echo "invalid SecretFabric env file" >&2
+      return 1
+    fi
+    key="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+    if [[ "${value}" == \"*\" && "${value}" == *\" ]]; then
+      value="${value:1:${#value}-2}"
+    elif [[ "${value}" == \'*\' && "${value}" == *\' ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    case "${key}" in
+      SECRET_FABRIC_URL|SECRET_FABRIC_API_TOKEN)
+        if [[ -z "${!key:-}" && -n "${value}" ]]; then
+          printf -v "${key}" '%s' "${value}"
+          export "${key}"
+        fi
+        ;;
+    esac
+  done < "${env_file}"
+}
+
 # Export compose env vars for a profile principal (container + volume names).
 # @param $1 principal
 export_agentmail_compose_names() {

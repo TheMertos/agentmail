@@ -101,13 +101,15 @@ test('native service mode does not enable sync or idle', () => {
 
 test('hermes wrapper runs node with the derived principal and fails closed without secrets', () => {
   const { binDir, logPath } = fakeNode();
+  const emptyHome = mkdtempSync(join(tmpdir(), 'agentmail-no-env-'));
   const missing = runScript(wrapperPath, {
     hermesHome: '/home/user/.hermes/profiles/mert',
     pathPrefix: binDir,
-    env: { SECRET_FABRIC_URL: '', SECRET_FABRIC_API_TOKEN: '' }
+    env: { HOME: emptyHome, SECRET_FABRIC_URL: '', SECRET_FABRIC_API_TOKEN: '' }
   });
   assert.notEqual(missing.status, 0);
   assert.match(missing.stderr, /SECRET_FABRIC_URL/);
+  assert.doesNotMatch(missing.stderr, /tok/);
 
   const home = mkdtempSync(join(tmpdir(), 'agentmail-native-home-'));
   const result = runScript(wrapperPath, {
@@ -129,6 +131,60 @@ test('hermes wrapper runs node with the derived principal and fails closed witho
   assert.match(log, new RegExp(`db:${home}/.local/share/agentmail/mert/agentmail.db`));
   assert.match(log, /hold:$/m);
   assert.doesNotMatch(result.stderr + log, /docker exec/);
+});
+
+test('hermes wrapper loads a profile SecretFabric env file without printing or overriding secrets', () => {
+  const { binDir, logPath } = fakeNode();
+  const home = mkdtempSync(join(tmpdir(), 'agentmail-profile-env-'));
+  const configDir = join(home, '.config', 'agentmail');
+  mkdirSync(configDir, { recursive: true });
+  const fileToken = 'file-secret-token';
+  writeFileSync(
+    join(configDir, 'mert.env'),
+    `SECRET_FABRIC_URL=http://file.example\nSECRET_FABRIC_API_TOKEN=${fileToken}\n`
+  );
+  const loaded = runScript(wrapperPath, {
+    hermesHome: '/home/user/.hermes/profiles/mert',
+    pathPrefix: binDir,
+    env: { HOME: home, SECRET_FABRIC_URL: '', SECRET_FABRIC_API_TOKEN: '' }
+  });
+  assert.equal(loaded.status, 0, loaded.stderr);
+  assert.match(readFileSync(logPath, 'utf8'), /url:http:\/\/file\.example/);
+  assert.doesNotMatch(`${loaded.stdout}${loaded.stderr}`, new RegExp(fileToken));
+
+  const inherited = runScript(wrapperPath, {
+    hermesHome: '/home/user/.hermes/profiles/mert',
+    pathPrefix: binDir,
+    env: {
+      HOME: home,
+      SECRET_FABRIC_URL: 'http://127.0.0.1:3000',
+      SECRET_FABRIC_API_TOKEN: 'inherited-token'
+    }
+  });
+  assert.equal(inherited.status, 0, inherited.stderr);
+  assert.match(readFileSync(logPath, 'utf8'), /url:http:\/\/127\.0\.0\.1:3000/);
+  assert.doesNotMatch(`${inherited.stdout}${inherited.stderr}`, new RegExp(fileToken));
+
+  const xdgHome = mkdtempSync(join(tmpdir(), 'agentmail-xdg-home-'));
+  const xdg = mkdtempSync(join(tmpdir(), 'agentmail-xdg-config-'));
+  mkdirSync(join(xdg, 'agentmail'), { recursive: true });
+  writeFileSync(
+    join(xdg, 'agentmail', 'mert.env'),
+    'SECRET_FABRIC_URL=http://xdg.example\nSECRET_FABRIC_API_TOKEN=xdg-token\n'
+  );
+  const fromXdg = runScript(wrapperPath, {
+    hermesHome: '/home/user/.hermes/profiles/mert',
+    pathPrefix: binDir,
+    env: {
+      HOME: xdgHome,
+      XDG_CONFIG_HOME: xdg,
+      SECRET_FABRIC_URL: '',
+      SECRET_FABRIC_API_TOKEN: ''
+    }
+  });
+  assert.equal(fromXdg.status, 0, fromXdg.stderr);
+  assert.match(readFileSync(logPath, 'utf8'), /url:http:\/\/xdg\.example/);
+  assert.doesNotMatch(`${fromXdg.stdout}${fromXdg.stderr}`, /xdg-token/);
 });
 
 test('native launcher refuses a non-native service mode and a profile mismatch', () => {
