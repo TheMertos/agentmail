@@ -103,7 +103,7 @@ The first production-capable release is not complete until a user can:
 8. Move/archive/trash a message.
 9. Send only after explicit approval.
 10. Verify the sent message in the provider’s Sent folder.
-11. Restart Docker without losing local mail metadata or drafts.
+11. Restart the native service without losing local mail metadata or drafts.
 12. Continue using standard mail functions if the AI provider is unavailable.
 
 ## Non-negotiable design rule

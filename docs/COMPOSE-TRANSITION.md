@@ -1,6 +1,6 @@
-# Native host service and Compose transition
+# Native host service
 
-AgentMail's supported runtime is a native host service. Docker Compose remains available and is not removed. Do not delete named volumes and do not stop the current containers as part of this change. Interactive mail stays remote-only: no message mirror reads, no background sync worker, and no IMAP IDLE.
+AgentMail's supported runtime is a native host service. Interactive mail stays remote-only: no message mirror reads, no background sync worker, and no IMAP IDLE. This repository does not ship a container image or Compose file.
 
 ## Native layout
 
@@ -42,7 +42,3 @@ hermes mcp add agentmail -- /home/mert/agent-mail-client/tools/hermes-agentmail-
 ```
 
 When `SECRET_FABRIC_URL` or `SECRET_FABRIC_API_TOKEN` is empty, the wrapper fills only the empty values from `~/.config/agentmail/<profile>.env` (`$XDG_CONFIG_HOME/agentmail/<profile>.env` when `XDG_CONFIG_HOME` is set). Non-empty inherited values stay in place. The process still exits if either value is missing after that load, and it never prints secret values.
-
-## Compose
-
-`compose.yaml` sets `AGENTMAIL_SERVICE_MODE=docker` and still runs only `node src/mcp/server.mjs`. `tools/provision-agentmail-profile.sh` can still build and start a profile stack. Leave existing containers and volumes running until you choose to retire them. The Hermes wrapper no longer attaches with `docker exec`.

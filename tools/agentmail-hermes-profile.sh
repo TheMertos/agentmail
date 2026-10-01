@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared Hermes profile → AgentMail principal/container naming (fail closed).
+# Shared Hermes profile → AgentMail principal naming (fail closed).
 
 # Derive canonical AgentMail principal from inherited HERMES_HOME.
 # @param $1 HERMES_HOME value
@@ -34,35 +34,11 @@ derive_principal_from_hermes_home() {
   printf '%s' "${principal}"
 }
 
-# Validate a profile/principal name for Docker resource naming.
+# Validate a profile/principal name.
 # @param $1 profile name
 validate_agentmail_profile_name() {
   local name="${1:-}"
   [[ "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
-}
-
-# Docker container name for an AgentMail profile principal.
-# @param $1 principal
-# @stdout container name
-agentmail_container_name_for_principal() {
-  local principal="${1:?principal required}"
-  printf 'agentmail-%s' "${principal}"
-}
-
-# Docker named volume for an AgentMail profile principal.
-# @param $1 principal
-# @stdout volume name
-agentmail_volume_name_for_principal() {
-  local principal="${1:?principal required}"
-  printf 'agentmail-%s-data' "${principal}"
-}
-
-# Compose project name for an AgentMail profile principal.
-# @param $1 principal
-# @stdout project name
-agentmail_compose_project_for_principal() {
-  local principal="${1:?principal required}"
-  printf 'agentmail-%s' "${principal}"
 }
 
 # Fill empty SECRET_FABRIC_URL and SECRET_FABRIC_API_TOKEN from the profile env file.
@@ -110,14 +86,4 @@ load_missing_secret_fabric_env() {
         ;;
     esac
   done < "${env_file}"
-}
-
-# Export compose env vars for a profile principal (container + volume names).
-# @param $1 principal
-export_agentmail_compose_names() {
-  local principal="${1:?principal required}"
-  export AGENTMAIL_CONTAINER_NAME
-  export AGENTMAIL_VOLUME_NAME
-  AGENTMAIL_CONTAINER_NAME="$(agentmail_container_name_for_principal "${principal}")"
-  AGENTMAIL_VOLUME_NAME="$(agentmail_volume_name_for_principal "${principal}")"
 }

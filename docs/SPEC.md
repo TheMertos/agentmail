@@ -62,7 +62,7 @@ AgentMail is a self-hosted, open-source mail client for reliable AI-assisted ema
 ## Resumable sync and progress (required)
 
 - The sync engine must checkpoint after every bounded message batch, not only after an entire folder completes.
-- A process crash, MCP timeout, Docker restart, or provider disconnect must resume from the last persisted UID/checkpoint without restarting the account from UID 1.
+- A process crash, MCP timeout, service restart, or provider disconnect must resume from the last persisted UID/checkpoint without restarting the account from UID 1.
 - Persist per-account/per-mailbox: UIDVALIDITY, last processed UID, remote message count/UIDNEXT when available, local message count, status, startedAt, updatedAt, error class, and completedAt.
 - If UIDVALIDITY changes, reset only the affected mailbox checkpoint and rebuild that mailbox safely.
 - Expose `sync_status(accountId)` via MCP with per-folder remote count, local count, downloaded count, remaining estimate, percentage, state, last checkpoint, and error.
@@ -80,7 +80,7 @@ AgentMail is a self-hosted, open-source mail client for reliable AI-assisted ema
 - Send endpoint rejects missing, expired, changed, or wrong-account approvals.
 - Successful send is read back and audited.
 - No secret or full message body appears in logs.
-- Docker Compose starts the app and health checks pass.
+- The native systemd user service starts the MCP server.
 
 ## 5. Delivery increments
 
@@ -90,7 +90,7 @@ AgentMail is a self-hosted, open-source mail client for reliable AI-assisted ema
 4. REST API and persistence.
 5. Next.js inbox, thread, composer, preview, approval UI.
 6. AI gateway and provider adapters.
-7. PostgreSQL worker, Docker deployment, integration tests.
+7. Integration tests against the native host service.
 
 ## 6. Out of scope for v0.1
 

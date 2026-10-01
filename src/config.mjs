@@ -1,6 +1,6 @@
 import { parseAttachmentRoots } from './mail/attachment-policy.mjs';
 
-/** Profile/principal name used for Docker resource isolation (fail closed). */
+/** Profile/principal name used for native data isolation (fail closed). */
 export const AGENTMAIL_PROFILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 const REQUIRED = [
@@ -32,9 +32,9 @@ export function loadConfig(env = process.env) {
   if (principal !== secretFabricPrincipal) {
     throw new Error('AGENTMAIL_PRINCIPAL must match SECRET_FABRIC_PRINCIPAL');
   }
-  const serviceMode = String(env.AGENTMAIL_SERVICE_MODE ?? 'docker').trim();
-  if (serviceMode !== 'native' && serviceMode !== 'docker') {
-    throw new Error('AGENTMAIL_SERVICE_MODE must be native or docker');
+  const serviceMode = String(env.AGENTMAIL_SERVICE_MODE ?? 'native').trim();
+  if (serviceMode !== 'native') {
+    throw new Error('AGENTMAIL_SERVICE_MODE must be native');
   }
   return {
     dbPath: env.AGENTMAIL_DB_PATH,

@@ -35,7 +35,7 @@ Mert asks Hermes to add an account
   -> lease material is destroyed
 ```
 
-AgentMail may be deployed in Docker, but it must not mount the SecretFabric database, encryption key, Hermes vault, or SecretFabric environment file.
+AgentMail runs as a native host process. It must not read the SecretFabric database, encryption key, Hermes vault, or SecretFabric environment file.
 
 ## AgentMail adapter contract
 
@@ -94,12 +94,12 @@ mfa and recovery material
 - SecretFabric unavailable: Hermes pauses onboarding or operation; AgentMail does not fall back to plaintext environment variables.
 - Expired lease: reject the operation and request a fresh Hermes lease.
 - Wrong credentials: report only a provider error classification.
-- Docker restart: no credential survives in the AgentMail container filesystem.
+- Process restart: no credential survives in the AgentMail data directory.
 - Browser request containing a lease: reject it; only the trusted Hermes adapter may supply leases.
 
 ## Verification requirements
 
-- AgentMail image contains no SecretFabric credentials or mounted SecretFabric files.
+- The AgentMail checkout and data directory contain no SecretFabric credentials.
 - Account records contain only opaque references and connection metadata.
 - Hermes can create and complete a real email claim.
 - IMAP and SMTP operations work through a short-lived lease.

@@ -28,7 +28,7 @@ This includes Inbox, Sent, Drafts, Archive, Trash, Spam, custom folders, and pro
 
 ## Local durability
 
-- Sync is resumable after process or Docker restart.
+- Sync is resumable after a process restart.
 - Each folder has a durable checkpoint and in-progress batch marker.
 - Message upserts are idempotent on `(account_id, mailbox_id, uidvalidity, uid)`.
 - Raw MIME is content-addressed to avoid duplicate storage.

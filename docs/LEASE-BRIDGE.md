@@ -13,7 +13,7 @@ Hermes requests account operation
   -> lease is released and credential object is discarded
 ```
 
-The bridge must not pass credentials as MCP tool arguments, JSON results, logs, database fields, Docker environment variables, command-line arguments, or files.
+The bridge must not pass credentials as MCP tool arguments, JSON results, logs, database fields, environment variables, command-line arguments, or files.
 
 ## Lease shape
 

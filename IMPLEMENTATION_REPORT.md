@@ -7,7 +7,7 @@ AgentMail now checkpoints IMAP sync after every bounded message batch, persists 
 ## Sync engine
 
 - `src/mail/sync-engine.mjs` loops per folder in batches (`batchSize`, default 100), writing a checkpoint after each non-empty batch and on completion.
-- Full and incremental modes load the last persisted UID checkpoint so crash, MCP timeout, Docker restart, or provider disconnect resume without restarting at UID 1.
+- Full and incremental modes load the last persisted UID checkpoint so crash, MCP timeout, service restart, or provider disconnect resume without restarting at UID 1.
 - UIDVALIDITY changes clear only the affected mailbox’s local messages and rebuild from UID 1 for that folder.
 - Incremental sync skips folders that are already `completed` when `uidNext` and `uidValidity` match the lightweight remote status (no unnecessary full re-fetch).
 
@@ -39,7 +39,8 @@ Existing account, SecretFabric lease, signature, approval, Sent-folder, and MCP 
 ## Verification
 
 ```bash
-yarn lint && yarn test
-docker compose config --quiet
-docker compose build
+yarn lint
+node --test --test-concurrency=1 test/**/*.test.mjs
+git diff --check
+systemctl --user is-active agentmail@default.service
 ```

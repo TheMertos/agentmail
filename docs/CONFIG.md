@@ -21,9 +21,9 @@ SECRET_FABRIC_API_TOKEN=...
 
 `SECRET_FABRIC_PRINCIPAL` must be set to the same value as `AGENTMAIL_PRINCIPAL`. It is sent on every SecretFabric resolve request as the trusted `x-hermes-principal` header (never in the JSON body and never from MCP tool arguments).
 
-Compose sets `AGENTMAIL_PROFILE` (default `default` for plain `docker compose build`; provisioning sets it to the profile name) and sets `AGENTMAIL_PRINCIPAL` and `SECRET_FABRIC_PRINCIPAL` to that same profile value. Those principals are not read from separate host variables, so an MCP client cannot supply a different principal through Compose.
+The native launcher and systemd user unit set `AGENTMAIL_PROFILE` to the Hermes profile name and set `AGENTMAIL_PRINCIPAL` and `SECRET_FABRIC_PRINCIPAL` to that same value. Those principals are not taken from MCP tool arguments.
 
-Hermes attaches MCP through the stdio wrapper, which injects `AGENTMAIL_PRINCIPAL` and `SECRET_FABRIC_PRINCIPAL` from inherited `HERMES_HOME` and runs `node src/mcp/server.mjs` directly. The MCP server still refuses to start when either principal is missing, empty, or mismatched, or when `AGENTMAIL_SERVICE_MODE=native` lacks a matching profile and absolute attachment roots.
+Hermes attaches MCP through the stdio wrapper, which injects `AGENTMAIL_PRINCIPAL` and `SECRET_FABRIC_PRINCIPAL` from inherited `HERMES_HOME` and runs `node src/mcp/server.mjs` directly. The MCP server refuses to start when either principal is missing, empty, or mismatched, or when `AGENTMAIL_SERVICE_MODE` is not `native`, or when the matching profile and absolute attachment roots are missing.
 
 ## Hermes MCP stdio wrapper
 
@@ -39,7 +39,7 @@ Derived names must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`. There is no fallback to
 
 MCP security contract: the principal comes from `HERMES_HOME`. Host paths are rejected unless `filePath` stays inside `AGENTMAIL_ATTACHMENT_ROOTS`. `attachment_upload` returns metadata only. Approval is required before `message_send`. mail_account_register does not overwrite an existing account, secretRef, or connection.
 
-On success the wrapper runs Node in the repository with `AGENTMAIL_SERVICE_MODE=native`, the derived principal, and a profile data directory under `$XDG_DATA_HOME/agentmail/<principal>` or `$HOME/.local/share/agentmail/<principal>`. `SECRET_FABRIC_URL` and `SECRET_FABRIC_API_TOKEN` come from the inherited environment. Empty values are filled from `~/.config/agentmail/<principal>.env` (or `$XDG_CONFIG_HOME/agentmail/<principal>.env`) without replacing values that are already set and without printing them. Startup still fails closed when either value is missing. The wrapper does not call `docker exec`.
+On success the wrapper runs Node in the repository with `AGENTMAIL_SERVICE_MODE=native`, the derived principal, and a profile data directory under `$XDG_DATA_HOME/agentmail/<principal>` or `$HOME/.local/share/agentmail/<principal>`. `SECRET_FABRIC_URL` and `SECRET_FABRIC_API_TOKEN` come from the inherited environment. Empty values are filled from `~/.config/agentmail/<principal>.env` (or `$XDG_CONFIG_HOME/agentmail/<principal>.env`) without replacing values that are already set and without printing them. Startup still fails closed when either value is missing.
 
 ```text
 AGENTMAIL_PRINCIPAL=<derived> \
@@ -48,32 +48,22 @@ AGENTMAIL_SERVICE_MODE=native \
 node src/mcp/server.mjs
 ```
 
-## Profile-isolated containers
+## Profile-isolated data
 
-Each Hermes profile gets its own long-running AgentMail container and SQLite volume. Operators who use the same Hermes profile name share one container (`agentmail-<profile>`) and one volume (`agentmail-<profile>-data`). A different Hermes profile (or the default `.../.hermes` home, principal `default`) must use a separately provisioned stack so mail data and MCP attach paths stay isolated.
+Each Hermes profile gets its own native data directory. Operators who use the same Hermes profile name share `$XDG_DATA_HOME/agentmail/<profile>` or `$HOME/.local/share/agentmail/<profile>`. A different Hermes profile (or the default `.../.hermes` home, principal `default`) uses a separate directory so mail metadata stays isolated.
 
-| Hermes context | Principal | Container | Named volume |
-| --- | --- | --- | --- |
-| `.../.hermes/profiles/mert` | `mert` | `agentmail-mert` | `agentmail-mert-data` |
-| `.../.hermes` (default) | `default` | `agentmail-default` | `agentmail-default-data` |
+| Hermes context | Principal | Data directory |
+| --- | --- | --- |
+| `.../.hermes/profiles/mert` | `mert` | `~/.local/share/agentmail/mert/` |
+| `.../.hermes` (default) | `default` | `~/.local/share/agentmail/default/` |
 
-Provision a stack once per profile from the AgentMail repo root (does not modify Hermes core):
-
-```bash
-export SECRET_FABRIC_URL=https://secretfabric.example
-export SECRET_FABRIC_API_TOKEN=...
-tools/provision-agentmail-profile.sh mert
-```
-
-The script validates the profile name (`^[A-Za-z0-9][A-Za-z0-9._-]*$`), requires `SECRET_FABRIC_URL` and `SECRET_FABRIC_API_TOKEN` from the **operator environment only** (no CLI secrets, no copying credentials into the repo), and runs `docker compose --project-name agentmail-<profile> up -d --build` with `AGENTMAIL_CONTAINER_NAME`, `AGENTMAIL_VOLUME_NAME`, and `AGENTMAIL_PROFILE` set for that profile. Compose keeps `restart: always` and runs `node src/mcp/server.mjs`. Background sync and IMAP IDLE are not started. The named volume remains for non-sensitive account metadata and opaque SecretFabric references.
-
-Plain `docker compose build` (without provisioning) uses the default compose names `agentmail-default` / `agentmail-default-data` for image builds only; Hermes MCP attach still requires the matching provisioned container for the active profile.
+Install the user service once per profile. The steps are in [`COMPOSE-TRANSITION.md`](COMPOSE-TRANSITION.md). The profile name must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`. `SECRET_FABRIC_URL` and `SECRET_FABRIC_API_TOKEN` come from the operator environment or `~/.config/agentmail/<profile>.env`. The unit runs `node src/mcp/server.mjs`. Background sync and IMAP IDLE are not started. The directory stores non-sensitive account metadata and opaque SecretFabric references.
 
 ## Transport and infrastructure trust
 
 AgentMail currently exposes MCP over **stdio only** (`AGENTMAIL_TRANSPORT=stdio`). Anyone who can attach to the process stdio or read/write the SQLite database file with host privileges is treated as trusted infrastructure—not as a separate application principal.
 
-In Docker, that means operators with access to a profile’s `agentmail-<profile>-data` volume, that container’s filesystem, or the host Docker daemon can read or modify that profile’s local mail mirror and database. Principal identity follows the active Hermes profile; restrict volume and container access accordingly.
+On the host, operators with access to a profile’s data directory can read or modify that profile’s account metadata database. Principal identity follows the active Hermes profile; restrict that directory accordingly.
 
 ## In-app / SQLite configuration
 
@@ -86,7 +76,7 @@ These are not environment variables and are managed through MCP tools:
 - signatures and account identity settings;
 - sync checkpoints and local mail mirror.
 
-The Docker image never receives account passwords or OAuth tokens through environment variables.
+The native process never receives account passwords or OAuth tokens through environment variables.
 
 ## Account activation
 

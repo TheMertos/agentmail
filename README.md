@@ -55,7 +55,7 @@ Runtime shape:
 - **Mail engine:** live IMAP/SMTP providers behind `MailService`.
 - **Calendar:** remote CalDAV stays in AgentCalendar. This repository does not sync or store events.
 - **Credential control plane:** Hermes/SecretFabric handles account onboarding and short-lived credential leases. AgentMail stores opaque references, not secrets.
-- **Deployment:** the supported host service is a systemd user unit plus the Hermes wrapper, both running Node directly. Docker Compose remains an optional transition and is not removed. Background sync and IMAP IDLE are not started. Existing named volumes are left in place.
+- **Deployment:** the supported host service is a systemd user unit plus the Hermes wrapper, both running Node directly. Background sync and IMAP IDLE are not started.
 
 ## Mail operations
 
@@ -77,7 +77,7 @@ Summaries, classification, and rewriting stay in the MCP client. AgentMail retur
 - preview before send, bound to the exact body, signature, and attachment metadata;
 - credentials only through short-lived SecretFabric leases;
 - structured logs with message bodies and secrets excluded;
-- Docker Compose deployment of the MCP server.
+- a native systemd user service for the MCP server.
 
 ## Development status
 
@@ -91,7 +91,7 @@ Credentials are brokered through the existing SecretFabric installation. AgentMa
 
 The deployed runtime is one MCP server process:
 
-- The native host service and the Hermes wrapper run `node src/mcp/server.mjs`. Background IMAP synchronization and Inbox IDLE are disabled. Docker volumes are not deleted.
+- The native host service and the Hermes wrapper run `node src/mcp/server.mjs`. Background IMAP synchronization and Inbox IDLE are disabled.
 - Hermes starts interactive tool calls against that server. The wrapper derives `AGENTMAIL_PRINCIPAL` from the trusted `HERMES_HOME`; callers cannot select a different principal through tool arguments.
 - For every IMAP or SMTP operation, the MCP runtime asks SecretFabric for a short-lived lease using the account's opaque `secretRef`, a purpose, and field paths such as `incoming.username` and `incoming.password`.
 - SecretFabric returns credentials only in process memory. The lease is released after the operation and private fields are destroyed.
@@ -113,7 +113,7 @@ AgentMail follows IMAP flag semantics on the live server:
 
 The Hermes MCP wrapper derives the runtime principal only from inherited `HERMES_HOME` and injects it as `AGENTMAIL_PRINCIPAL`. MCP tool arguments cannot choose or impersonate that principal. Host paths are rejected by `attachment_upload` unless `filePath` is a regular file inside an approved root; arbitrary paths and paths from mail content are never read. The tool returns metadata only (id, filename, content type, size, sha256). Approval is required before `message_send`. mail_account_register does not overwrite an existing account, `secretRef`, or connection; there is no silent migration of those fields.
 
-Native install and the Compose transition are in [`docs/COMPOSE-TRANSITION.md`](docs/COMPOSE-TRANSITION.md).
+Native install is in [`docs/COMPOSE-TRANSITION.md`](docs/COMPOSE-TRANSITION.md).
 
 ## Non-goals
 

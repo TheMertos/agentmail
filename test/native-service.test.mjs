@@ -74,8 +74,9 @@ exit 0
   return { binDir, logPath };
 }
 
-test('service mode rejects values other than native or docker', () => {
-  assert.throws(() => loadConfig({ ...BASE_ENV, AGENTMAIL_SERVICE_MODE: 'mirror' }), /AGENTMAIL_SERVICE_MODE/);
+test('service mode accepts only native', () => {
+  assert.throws(() => loadConfig({ ...BASE_ENV, AGENTMAIL_SERVICE_MODE: 'docker' }), /AGENTMAIL_SERVICE_MODE must be native/);
+  assert.equal(loadConfig(BASE_ENV).serviceMode, 'native');
 });
 
 test('native service mode requires matching profile and absolute attachment roots', () => {

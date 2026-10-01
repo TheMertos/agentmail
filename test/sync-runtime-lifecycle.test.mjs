@@ -12,21 +12,16 @@ import { TEST_PRINCIPAL } from './test-principal.mjs';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 
-test('compose and image entrypoint run MCP and do not start the sync worker', () => {
-  const compose = readFileSync(join(repoRoot, 'compose.yaml'), 'utf8');
-  const dockerfile = readFileSync(join(repoRoot, 'Dockerfile'), 'utf8');
-  assert.match(compose, /command:\s*\["node",\s*"src\/mcp\/server\.mjs"\]/);
-  assert.doesNotMatch(compose, /sync-runtime-worker/);
-  assert.doesNotMatch(compose, /sleep.*infinity/);
-  assert.match(compose, /AGENTMAIL_PROFILE:\s*\$\{AGENTMAIL_PROFILE:-default\}/);
-  assert.match(compose, /AGENTMAIL_PRINCIPAL:\s*\$\{AGENTMAIL_PROFILE:-default\}/);
-  assert.match(compose, /SECRET_FABRIC_PRINCIPAL:\s*\$\{AGENTMAIL_PROFILE:-default\}/);
-  assert.doesNotMatch(compose, /\$\{AGENTMAIL_PRINCIPAL/);
-  assert.doesNotMatch(compose, /\$\{SECRET_FABRIC_PRINCIPAL/);
-  assert.match(compose, /restart:\s*always/);
-  assert.match(compose, /agentmail-data:/);
-  assert.match(dockerfile, /ENTRYPOINT \["node", "src\/mcp\/server\.mjs"\]/);
-  assert.doesNotMatch(dockerfile, /sync-runtime-worker/);
+test('native unit and launcher run MCP and do not start the sync worker', () => {
+  const unit = readFileSync(join(repoRoot, 'deploy/systemd/user/agentmail@.service'), 'utf8');
+  const launcher = readFileSync(join(repoRoot, 'tools/agentmail-native-mcp.sh'), 'utf8');
+  const source = `${unit}\n${launcher}`;
+  assert.match(unit, /agentmail-native-mcp\.sh --service %i/);
+  assert.match(launcher, /src\/mcp\/server\.mjs/);
+  assert.doesNotMatch(source, /sync-runtime-worker/);
+  assert.doesNotMatch(source, /docker/);
+  assert.match(unit, /AGENTMAIL_SERVICE_MODE=native/);
+  assert.match(unit, /AGENTMAIL_NATIVE_HOLD=1/);
 });
 
 test('MCP server does not enqueue or start mailbox sync', () => {

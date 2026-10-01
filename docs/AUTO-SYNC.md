@@ -33,7 +33,7 @@ Exclusions must be explicit and visible in `sync_policy_get`. Spam or Trash may 
 
 ## Remote-only behavior
 
-- Background sync and IMAP IDLE are disabled. The container command is `node src/mcp/server.mjs`, scoped by `AGENTMAIL_PROFILE` to the provisioned principal.
+- Background sync and IMAP IDLE are disabled. The native service command is `node src/mcp/server.mjs`, scoped by `AGENTMAIL_PROFILE` to the Hermes principal.
 - Interactive MCP reads, searches, and flag changes query IMAP directly. A provider error fails closed and is not filled from a local message mirror.
 - `mailService.syncAccount` and `openIdleWatch` throw `remote_only_sync_disabled` or `remote_only_idle_disabled` and do not acquire a lease.
 - MCP `sync_status` and `sync_status_all` report `mode: remote-only` and do not read checkpoints.

@@ -1,7 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import * as z from 'zod/v4';
-import { loadConfig } from '../config.mjs';
 import { assertNativeService } from '../runtime/native-service.mjs';
 import {
   attachmentUploadDescription,
@@ -20,9 +19,7 @@ import { createSyncStatusHandlers } from './sync-status-tools.mjs';
 import { redactSensitiveText, redactToolError } from '../security/redact.mjs';
 import { createMailRuntime } from '../runtime/mail-runtime.mjs';
 
-const config = String(process.env.AGENTMAIL_SERVICE_MODE ?? '').trim() === 'native'
-  ? assertNativeService(process.env)
-  : loadConfig();
+const config = assertNativeService(process.env);
 const { store, registry, mailService } = createMailRuntime(config);
 const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ registry });
 const messageSearch = createMessageSearchHandler({ registry, mailService });

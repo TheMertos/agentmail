@@ -12,7 +12,7 @@ AgentMail MCP server
 IMAP / SMTP providers
 ```
 
-The server must be usable on a headless Docker host and must not require a browser, dashboard, or interactive terminal.
+The server must be usable on a headless host and must not require a browser, dashboard, or interactive terminal.
 
 ## MCP tool surface
 
@@ -94,9 +94,9 @@ The MCP server must reject lease material arriving from an untrusted browser or 
 
 A web UI may be added later as a separate debug/admin package. It is not required for mail operations, credential setup, AI use, or deployment.
 
-## Docker
+## Native host service
 
-The production container runs the MCP server (`node src/mcp/server.mjs`) as non-root. Interactive message reads, searches, flag changes, and sends query the live IMAP or SMTP provider for that operation. Background sync and IMAP IDLE are disabled, and message bodies, MIME, flags, and checkpoints are not written locally. Hermes attaches MCP over stdio. A provider error fails closed and is not filled from a local cache.
+The systemd user unit and Hermes wrapper run the MCP server (`node src/mcp/server.mjs`). Interactive message reads, searches, flag changes, and sends query the live IMAP or SMTP provider for that operation. Background sync and IMAP IDLE are disabled, and message bodies, MIME, flags, and checkpoints are not written locally. Hermes attaches MCP over stdio. A provider error fails closed and is not filled from a local cache.
 
 Preferred MCP transports:
 
