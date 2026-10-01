@@ -67,7 +67,7 @@ Every destructive or external operation requires an explicit approval token and 
 
 ## MCP security contract
 
-The stdio wrapper `tools/hermes-agentmail-mcp.sh` derives the principal only from inherited `HERMES_HOME`. Host paths are rejected unless `filePath` resolves inside an approved root; arbitrary paths and mail-content paths are never read. `attachment_upload` returns metadata only. Approval is required before `message_send`. mail_account_register does not overwrite an existing account, secretRef, or connection.
+The stdio wrapper `tools/hermes-agentmail-mcp.sh` derives the principal only from inherited `HERMES_HOME`. `attachment_upload` accepts only a `filePath` that resolves inside an approved root; arbitrary paths and mail-content paths are never read. `attachment_upload` returns metadata only. Approval is required before `message_send`. mail_account_register does not overwrite an existing account, secretRef, or connection.
 
 ## MCP safety rules
 

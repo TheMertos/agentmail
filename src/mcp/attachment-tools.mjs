@@ -4,7 +4,7 @@ import { assertAttachmentSetLimits, attachmentError, validateAttachmentUpload } 
 import { assembleOutgoingMime } from '../mail/outgoing-mime.mjs';
 
 /** MCP description for attachment_upload. */
-export const attachmentUploadDescription = 'Stage an outgoing attachment from base64 content or from filePath inside an approved root. Host paths are rejected unless filePath is a regular file inside that root. Arbitrary paths and paths from mail content are rejected and never read. Returns id, filename, content type, size, and sha256 only. Path traversal, symlink escapes, executable names, credential-like names, disallowed types, oversized payloads, and plaintext secrets are rejected.';
+export const attachmentUploadDescription = 'Stage an outgoing attachment from filePath inside an approved root. Only regular files inside that root are accepted; arbitrary paths and paths from mail content are rejected and never read. Returns id, filename, content type, size, and sha256 only. Path traversal, symlink escapes, executable names, credential-like names, disallowed types, oversized payloads, and plaintext secrets are rejected.';
 
 const approvedAttachmentShape = {
   id: z.string().uuid(),
@@ -25,9 +25,8 @@ export const attachmentUploadInputSchema = {
   accountId: z.string().min(1),
   filename: z.string().min(1),
   contentType: z.string().min(1),
-  contentBase64: z.string().min(1),
+  filePath: z.string().min(1).optional(),
   path: z.string().optional(),
-  filePath: z.string().optional(),
   hostPath: z.string().optional()
 };
 

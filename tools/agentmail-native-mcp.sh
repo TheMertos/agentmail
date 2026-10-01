@@ -68,7 +68,7 @@ export AGENTMAIL_SYNC_INTERVAL_SECONDS="${AGENTMAIL_SYNC_INTERVAL_SECONDS:-300}"
 export AGENTMAIL_LOG_LEVEL="${AGENTMAIL_LOG_LEVEL:-info}"
 export AGENTMAIL_TRANSPORT=stdio
 if [[ -z "${AGENTMAIL_ATTACHMENT_ROOTS:-}" ]]; then
-  export AGENTMAIL_ATTACHMENT_ROOTS="${data_root}/outgoing"
+  export AGENTMAIL_ATTACHMENT_ROOTS="${data_root}/outgoing:${HOME}/lebenlslauf"
 fi
 if [[ "${service_mode}" -eq 1 ]]; then
   export AGENTMAIL_NATIVE_HOLD=1

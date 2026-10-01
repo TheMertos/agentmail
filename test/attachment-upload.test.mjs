@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -238,6 +238,43 @@ test('messages without attachments send the reviewed MIME unchanged', () => {
   const scope = openScope();
   const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry });
   assert.equal(handlers.materializeApprovedMime(payload), reviewed);
+  scope.cleanup();
+});
+
+test('attachment upload reads a filePath only from the approved root', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agentmail-attach-root-'));
+  const filePath = join(root, 'Mert-Yagci-CV.pdf');
+  writeFileSync(filePath, PDF);
+  const staged = validateAttachmentUpload({
+    filename: 'Mert-Yagci-CV.pdf',
+    contentType: 'application/pdf',
+    filePath
+  }, { roots: [root] });
+  assert.equal(staged.size, PDF.length);
+  assert.equal(staged.sha256, createHash('sha256').update(PDF).digest('hex'));
+  assert.equal(staged.content.equals(PDF), true);
+  assert.throws(() => validateAttachmentUpload({
+    filename: 'Mert-Yagci-CV.pdf',
+    contentType: 'application/pdf',
+    filePath: '/etc/passwd'
+  }, { roots: [root] }), /attachment_path_rejected/);
+  rmSync(root, { recursive: true, force: true });
+});
+test('missing filePath fails closed before any attachment is staged', () => {
+  const scope = openScope();
+  const handlers = createAttachmentHandlers({
+    store: scope.store,
+    registry: scope.registry,
+    attachmentRoots: ['/home/mert/lebenlslauf']
+  });
+  const result = JSON.parse(handlers.attachmentUpload({
+    accountId: 'gmail',
+    filename: 'Lebenslauf_Mert_Yagci_JavaDeveloper.pdf',
+    contentType: 'application/pdf',
+    filePath: '/home/mert/lebenlslauf/does-not-exist.pdf'
+  }).content[0].text);
+  assert.equal(result.error, 'attachment_path_rejected');
+  assert.deepEqual(scope.store.listStagedAttachments?.({ accountId: 'gmail', ownerPrincipal: 'mert' }) ?? [], []);
   scope.cleanup();
 });
 

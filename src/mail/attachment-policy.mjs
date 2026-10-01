@@ -184,25 +184,6 @@ function assertSafeFilename(filename) {
   if (CREDENTIAL_NAME.some((pattern) => pattern.test(lower))) throw attachmentError('attachment_name_rejected');
 }
 
-/**
- * Decode canonical base64 without accepting a filesystem path.
- * @param {string} value Base64 payload.
- * @returns {Buffer}
- */
-function decodeBase64(value) {
-  if (typeof value !== 'string' || value.length === 0) throw attachmentError('attachment_invalid');
-  const maxEncoded = Math.ceil(ATTACHMENT_LIMITS.maxBytes / 3) * 4 + 4;
-  if (value.length > maxEncoded + 1024) throw attachmentError('attachment_too_large');
-  const compact = value.replace(/\s+/g, '');
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact) || compact.length % 4 !== 0) {
-    throw attachmentError('attachment_invalid');
-  }
-  const content = Buffer.from(compact, 'base64');
-  if (content.toString('base64').replace(/=+$/, '') !== compact.replace(/=+$/, '')) {
-    throw attachmentError('attachment_invalid');
-  }
-  return content;
-}
 
 /**
  * Reject PEM private keys, cloud tokens, and dotenv-style secret files.
@@ -339,9 +320,8 @@ export function validateAttachmentUpload(input, options = {}) {
   }
   assertExtensionMatchesType(input.filename, input.contentType);
   const hasFile = input.filePath != null && input.filePath !== '';
-  const hasBytes = input.contentBase64 != null && input.contentBase64 !== '';
-  if (hasFile && hasBytes) throw attachmentError('attachment_path_rejected');
-  const content = hasFile ? readApprovedFile(input.filePath, options.roots ?? []) : decodeBase64(input.contentBase64);
+  if (!hasFile) throw attachmentError('attachment_path_rejected');
+  const content = readApprovedFile(input.filePath, options.roots ?? []);
   if (content.length === 0) throw attachmentError('attachment_invalid');
   if (content.length > ATTACHMENT_LIMITS.maxBytes) throw attachmentError('attachment_too_large');
   assertNoPlaintextSecret(content, input.contentType);

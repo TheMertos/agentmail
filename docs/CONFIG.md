@@ -37,7 +37,7 @@ Hermes should start AgentMail MCP through `tools/hermes-agentmail-mcp.sh`. The w
 
 Derived names must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`. There is no fallback to OS usernames, `HERMES_INSTANCE_NAME`, or MCP tool arguments.
 
-MCP security contract: the principal comes from `HERMES_HOME`. Host paths are rejected unless `filePath` stays inside `AGENTMAIL_ATTACHMENT_ROOTS`. `attachment_upload` returns metadata only. Approval is required before `message_send`. mail_account_register does not overwrite an existing account, secretRef, or connection.
+MCP security contract: the principal comes from `HERMES_HOME`. `attachment_upload` accepts only a `filePath` inside `AGENTMAIL_ATTACHMENT_ROOTS`; the resolved path must remain inside an approved root. `attachment_upload` returns metadata only. Approval is required before `message_send`. mail_account_register does not overwrite an existing account, secretRef, or connection.
 
 On success the wrapper runs Node in the repository with `AGENTMAIL_SERVICE_MODE=native`, the derived principal, and a profile data directory under `$XDG_DATA_HOME/agentmail/<principal>` or `$HOME/.local/share/agentmail/<principal>`. `SECRET_FABRIC_URL` and `SECRET_FABRIC_API_TOKEN` come from the inherited environment. Empty values are filled from `~/.config/agentmail/<principal>.env` (or `$XDG_CONFIG_HOME/agentmail/<principal>.env`) without replacing values that are already set and without printing them. Startup still fails closed when either value is missing.
 
