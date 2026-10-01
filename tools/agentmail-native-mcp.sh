@@ -72,6 +72,20 @@ else
   unset AGENTMAIL_NATIVE_HOLD || true
 fi
 
+# systemd user units ship a system PATH and do not see the user Node install.
+if ! command -v node >/dev/null 2>&1 && [[ -n "${HOME:-}" ]]; then
+  node_prefix=""
+  if [[ -d "${HOME}/.local/bin" ]]; then
+    node_prefix="${HOME}/.local/bin"
+  fi
+  if [[ -d "${HOME}/.hermes/node/bin" ]]; then
+    node_prefix="${node_prefix:+${node_prefix}:}${HOME}/.hermes/node/bin"
+  fi
+  if [[ -n "${node_prefix}" ]]; then
+    export PATH="${node_prefix}${PATH:+:${PATH}}"
+  fi
+fi
+
 if ! command -v node >/dev/null 2>&1; then
   echo "node is required" >&2
   exit 1

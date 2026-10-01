@@ -291,11 +291,16 @@ server.registerTool('message_send', {
 
 /**
  * Hold the native host service open without starting sync, IDLE, or an MCP stdio session.
+ * A timer keeps the event loop referenced until SIGTERM or SIGINT.
  * @returns {Promise<void>}
  */
 function holdNativeService() {
   return new Promise((resolve) => {
-    const stop = () => resolve();
+    const keepAlive = setInterval(() => {}, 60 * 60 * 1000);
+    const stop = () => {
+      clearInterval(keepAlive);
+      resolve();
+    };
     process.once('SIGTERM', stop);
     process.once('SIGINT', stop);
   });
