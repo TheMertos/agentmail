@@ -1,18 +1,36 @@
-import { buildSyncStatus, buildSyncStatusAll } from '../mail/sync-status.mjs';
-
 const text = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 
 /**
- * Read-only MCP handlers for sync_status and sync_status_all.
- * They report local checkpoint progress and never start or enqueue a sync.
- * @param {{ store: object, registry: { status: Function, list: Function }, syncJobService?: { getJobStatus: Function } }} deps Dependencies.
+ * Status for one account when background sync and IDLE are disabled.
+ * Does not read checkpoints, jobs, or message rows.
+ * @param {string} accountId Account id.
+ * @returns {object} Remote-only status.
+ */
+export function remoteOnlySyncStatus(accountId) {
+  return {
+    accountId,
+    mode: 'remote-only',
+    syncEnabled: false,
+    idleEnabled: false,
+    state: 'remote_only',
+    folders: [],
+    downloadedCount: 0,
+    remoteCount: null,
+    remaining: null,
+    percentage: null,
+    percentageReason: 'Background sync is disabled. Interactive tools read IMAP directly.'
+  };
+}
+
+/**
+ * MCP handlers for sync_status and sync_status_all.
+ * They report that background sync is disabled and never read the local mirror.
+ * @param {{ registry: { assertAccountAccess: Function, list: Function } }} deps Principal registry.
  * @returns {{ syncStatus: Function, syncStatusAll: Function }}
  */
-export function createSyncStatusHandlers({ store, registry, syncJobService }) {
-  const jobFor = (accountId) => syncJobService?.getJobStatus?.(accountId) ?? null;
-
+export function createSyncStatusHandlers({ registry }) {
   /**
-   * Return sync progress for one account.
+   * Return remote-only status for one account.
    * @param {{ accountId: string }} args Tool input.
    */
   function syncStatus({ accountId }) {
@@ -21,14 +39,13 @@ export function createSyncStatusHandlers({ store, registry, syncJobService }) {
     } catch {
       return text({ error: 'access_denied' });
     }
-    const status = buildSyncStatus(store, accountId, jobFor(accountId));
-    return text(status);
+    return text(remoteOnlySyncStatus(accountId));
   }
 
-  /** Return sync progress for all active accounts visible to the scoped registry. */
+  /** Return remote-only status for every active account visible to the scoped registry. */
   function syncStatusAll() {
-    const accountIds = registry.list().map((account) => account.id);
-    return text(buildSyncStatusAll(store, jobFor, accountIds));
+    const accounts = registry.list().map((account) => remoteOnlySyncStatus(account.id));
+    return text({ accounts, mode: 'remote-only', syncEnabled: false, idleEnabled: false });
   }
 
   return { syncStatus, syncStatusAll };

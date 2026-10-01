@@ -86,7 +86,7 @@ The stdio wrapper `tools/hermes-agentmail-mcp.sh` derives the principal only fro
 
 ## Credential boundary
 
-Hermes performs onboarding. The long-lived sync worker resolves SecretFabric credentials in-process from the account's opaque `secretRef` and the runtime principal (`x-hermes-principal` from configuration, never from MCP arguments). AgentMail stores only opaque account references and non-sensitive connection metadata. MCP tool results never include passwords, tokens, or lease material.
+Hermes performs onboarding. Each interactive IMAP or SMTP operation resolves a SecretFabric lease in-process from the account's opaque `secretRef` and the runtime principal (`x-hermes-principal` from configuration, never from MCP arguments). AgentMail stores only opaque account references and non-sensitive connection metadata. MCP tool results never include passwords, tokens, or lease material.
 
 The MCP server must reject lease material arriving from an untrusted browser or from arbitrary tool arguments. The trusted adapter is configured outside the MCP tool surface.
 
@@ -96,7 +96,7 @@ A web UI may be added later as a separate debug/admin package. It is not require
 
 ## Docker
 
-The production container's long-lived process is the sync worker (`node src/worker/sync-runtime-worker.mjs`), running as non-root. That process schedules mailbox sync itself and keeps one Inbox IDLE watcher per enabled account. Hermes attaches MCP with a short-lived `docker exec` of `node src/mcp/server.mjs`. The MCP process cannot enqueue or start sync, and stopping that exec does not affect the worker.
+The production container runs the MCP server (`node src/mcp/server.mjs`) as non-root. Interactive message reads, searches, flag changes, and sends query the live IMAP or SMTP provider for that operation. Background sync and IMAP IDLE are disabled, and message bodies, MIME, flags, and checkpoints are not written locally. Hermes attaches MCP over stdio. A provider error fails closed and is not filled from a local cache.
 
 Preferred MCP transports:
 

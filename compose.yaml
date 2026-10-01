@@ -9,6 +9,8 @@ services:
     tty: false
     environment:
       AGENTMAIL_PROFILE: ${AGENTMAIL_PROFILE:-default}
+      AGENTMAIL_PRINCIPAL: ${AGENTMAIL_PROFILE:-default}
+      SECRET_FABRIC_PRINCIPAL: ${AGENTMAIL_PROFILE:-default}
       AGENTMAIL_DB_PATH: /data/agentmail.db
       AGENTMAIL_SYNC_INTERVAL_SECONDS: "300"
       AGENTMAIL_LOG_LEVEL: info
@@ -16,7 +18,7 @@ services:
       SECRET_FABRIC_URL: ${SECRET_FABRIC_URL:?SECRET_FABRIC_URL is required}
       SECRET_FABRIC_API_TOKEN: ${SECRET_FABRIC_API_TOKEN:?SECRET_FABRIC_API_TOKEN is required}
     entrypoint: []
-    command: ["node", "src/worker/sync-runtime-worker.mjs"]
+    command: ["node", "src/mcp/server.mjs"]
     network_mode: "host"
     volumes:
       - agentmail-data:/data

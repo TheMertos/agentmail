@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startDurableSyncWorker } from '../src/worker/durable-sync.mjs';
 
-test('worker keeps its own interval after a sync failure', async () => {
+test('disabled worker does not retry sync after a failure because it never starts', async () => {
   const calls = [];
-  const { stop } = startDurableSyncWorker({
+  const { stop, syncEnabled, idleEnabled } = startDurableSyncWorker({
     config: { syncIntervalSeconds: 0.05 },
     registry: {
       list: () => [{ id: 'a' }],
@@ -13,28 +13,20 @@ test('worker keeps its own interval after a sync failure', async () => {
     mailService: {
       syncAccount: async (accountId) => {
         calls.push(accountId);
-        if (calls.length === 1) throw new Error('imap_disconnect');
-        return { accountId, folders: [] };
+        throw new Error('imap_disconnect');
+      },
+      openIdleWatch: async () => {
+        calls.push('idle');
       }
     },
     store: {}
   });
 
   try {
-    const outcome = await Promise.race([
-      new Promise((resolve) => {
-        const timer = setInterval(() => {
-          if (calls.length >= 2) {
-            clearInterval(timer);
-            resolve('done');
-          }
-        }, 10);
-      }),
-      new Promise((resolve) => setTimeout(() => resolve('hung'), 1000))
-    ]);
-    assert.equal(outcome, 'done');
-    assert.ok(calls.length >= 2);
-    assert.ok(calls.every((accountId) => accountId === 'a'));
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.equal(syncEnabled, false);
+    assert.equal(idleEnabled, false);
+    assert.deepEqual(calls, []);
   } finally {
     stop();
   }

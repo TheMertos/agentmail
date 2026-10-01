@@ -43,6 +43,12 @@ test('reply preview carries real In-Reply-To and References into approved MIME',
   const binding = createPreviewBinding({
     store,
     registry,
+    mailService: {
+      async peekMessage(key) {
+        assert.equal(key, sourceMessageKey);
+        return store.getMessage(sourceMessageKey);
+      }
+    },
     pendingPreviews,
     pendingApprovals,
     now: () => 1_700_000_000

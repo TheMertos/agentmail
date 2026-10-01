@@ -20,11 +20,11 @@ import { redactSensitiveText, redactToolError } from '../security/redact.mjs';
 import { createMailRuntime } from '../runtime/mail-runtime.mjs';
 
 const { store, registry, mailService } = createMailRuntime(loadConfig());
-const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ store, registry });
-const messageSearch = createMessageSearchHandler({ store, registry });
-const messageRead = createMessageReadHandler({ store, registry, mailService });
-const messageMarkRead = createMessageMarkReadHandler({ store, registry, mailService });
-const messageMarkUnread = createMessageMarkUnreadHandler({ store, registry, mailService });
+const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ registry });
+const messageSearch = createMessageSearchHandler({ registry, mailService });
+const messageRead = createMessageReadHandler({ registry, mailService });
+const messageMarkRead = createMessageMarkReadHandler({ registry, mailService });
+const messageMarkUnread = createMessageMarkUnreadHandler({ registry, mailService });
 const attachmentsApi = createAttachmentHandlers({ store, registry });
 const server = new McpServer({ name: 'agentmail', version: '0.1.0' });
 const pendingApprovals = new Map();
@@ -32,6 +32,7 @@ const pendingPreviews = new Map();
 const previewBinding = createPreviewBinding({
   store,
   registry,
+  mailService,
   pendingPreviews,
   pendingApprovals,
   attachmentsApi
@@ -113,7 +114,14 @@ server.registerTool('draft_create', {
   } catch {
     return text({ error: 'access_denied' });
   }
-  if (sourceMessageKey && !store.getMessage(sourceMessageKey)) return text({ error: 'source_message_not_found' });
+  if (sourceMessageKey) {
+    try {
+      const source = await mailService.peekMessage(sourceMessageKey);
+      if (!source) return text({ error: 'source_message_not_found' });
+    } catch (error) {
+      return text({ error: redactToolError(error) });
+    }
+  }
   let staged = [];
   try {
     staged = resolveReplyAttachments(
@@ -176,12 +184,12 @@ server.registerTool('mailbox_list', {
   }
 });
 server.registerTool('sync_status', {
-  description: 'Read resumable sync progress per folder for one account from the local mirror. Does not start, enqueue, or wait for a sync. Never returns credentials.',
+  description: 'Report that background sync and IMAP IDLE are disabled. Interactive tools read IMAP directly. Does not read local checkpoints or start a sync. Never returns credentials.',
   inputSchema: { accountId: z.string().min(1) }
 }, async ({ accountId }) => syncStatus({ accountId }));
 
 server.registerTool('sync_status_all', {
-  description: 'Read resumable sync progress for every active account from the local mirror. Does not start, enqueue, or wait for a sync. Never returns credentials.',
+  description: 'Report that background sync and IMAP IDLE are disabled for every active account. Does not read local checkpoints or start a sync. Never returns credentials.',
   inputSchema: {}
 }, async () => syncStatusAll());
 

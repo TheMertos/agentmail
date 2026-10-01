@@ -343,17 +343,35 @@ test('search stays inside the requested account and the caller principal', async
     assert.deepEqual(page.items.map((item) => item.accountId), ['gmail']);
     store.activateAccountLegacy(ACCOUNT);
     const mert = createPrincipalRegistry(store, 'mert');
-    const handler = createMessageSearchHandler({ store, registry: mert });
-    const denied = JSON.parse(handler({ accountId: 'gmail', query: 'secret' }).content[0].text);
+    let remoteCalls = 0;
+    const mailService = {
+      async searchRemote(criteria) {
+        remoteCalls += 1;
+        assert.equal(criteria.accountId, 'gmail');
+        return {
+          items: [{ accountId: 'gmail', key: 'gmail:INBOX:1:1' }],
+          results: [{ accountId: 'gmail', key: 'gmail:INBOX:1:1' }],
+          total: 1,
+          hasMore: false,
+          nextCursor: null,
+          appliedFilters: {}
+        };
+      }
+    };
+    const handler = createMessageSearchHandler({ mailService, registry: mert });
+    const denied = JSON.parse((await handler({ accountId: 'gmail', query: 'secret' })).content[0].text);
     assert.equal(denied.error, 'access_denied');
     assert.equal(denied.items, undefined);
+    assert.equal(remoteCalls, 0);
     mert.register(ACCOUNT);
-    const allowed = JSON.parse(handler({ accountId: 'gmail', query: 'secret' }).content[0].text);
+    const allowed = JSON.parse((await handler({ accountId: 'gmail', query: 'secret' })).content[0].text);
     assert.equal(allowed.total, 1);
     assert.equal(allowed.items[0].accountId, 'gmail');
+    assert.equal(remoteCalls, 1);
     const other = createPrincipalRegistry(store, 'other-user');
-    const foreign = JSON.parse(createMessageSearchHandler({ store, registry: other })({ accountId: 'gmail', query: 'secret' }).content[0].text);
+    const foreign = JSON.parse((await createMessageSearchHandler({ mailService, registry: other })({ accountId: 'gmail', query: 'secret' })).content[0].text);
     assert.equal(foreign.error, 'access_denied');
+    assert.equal(remoteCalls, 1);
   } finally {
     close();
   }
@@ -380,8 +398,11 @@ test('MCP handler maps invalid search input to a safe error code', async () => {
   const { store, close } = openStore();
   try {
     store.activateAccountForPrincipal(ACCOUNT, 'mert');
-    const handler = createMessageSearchHandler({ store, registry: createPrincipalRegistry(store, 'mert') });
-    const invalid = JSON.parse(handler({ accountId: 'gmail', since: 'yesterday' }).content[0].text);
+    const handler = createMessageSearchHandler({
+      mailService: { async searchRemote() { throw new Error('store_fallback'); } },
+      registry: createPrincipalRegistry(store, 'mert')
+    });
+    const invalid = JSON.parse((await handler({ accountId: 'gmail', since: 'yesterday' })).content[0].text);
     assert.equal(invalid.error, 'invalid_date');
     assert.equal(JSON.stringify(invalid).includes('SELECT'), false);
   } finally {

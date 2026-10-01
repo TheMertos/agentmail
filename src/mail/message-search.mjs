@@ -510,6 +510,75 @@ function decodeCursor(token, normalized) {
  * @param {object} normalized
  * @returns {object}
  */
+/**
+ * Page provider hits with the same cursor and sort rules as the SQL search.
+ * @param {object[]} hits Remote message summaries with key, accountId, mailboxId, uid, uidValidity, internalDate, flags, and envelope.
+ * @param {object} normalized Output of normalizeMessageSearch.
+ * @returns {object} Envelope with items, results, nextCursor, hasMore, appliedFilters, and total.
+ */
+export function pageMessageHits(hits, normalized) {
+  const rows = hits.map((hit) => ({
+    message_key: hit.key,
+    account_id: hit.accountId,
+    mailbox_id: hit.mailboxId,
+    uid: hit.uid,
+    uid_validity: hit.uidValidity,
+    internal_date: hit.internalDate ?? null,
+    flags_json: JSON.stringify(hit.flags ?? []),
+    envelope_json: JSON.stringify(hit.envelope ?? null),
+    sort_date: typeof hit.internalDate === 'string' ? hit.internalDate : ''
+  }));
+  const direction = normalized.sortOrder === 'asc' ? 1 : -1;
+  rows.sort((left, right) => compareSearchRows(left, right, normalized) * direction);
+  let visible = rows;
+  if (normalized.cursor) {
+    const cursor = decodeCursor(normalized.cursor, normalized);
+    visible = rows.filter((row) => {
+      const sortValue = normalized.sortBy === 'uid' ? row.uid : row.sort_date;
+      const compared = compareSortValue(sortValue, cursor.sortValue);
+      if (compared === 0) {
+        const idCompared = row.message_key < cursor.id ? -1 : row.message_key > cursor.id ? 1 : 0;
+        return normalized.sortOrder === 'asc' ? idCompared > 0 : idCompared < 0;
+      }
+      return normalized.sortOrder === 'asc' ? compared > 0 : compared < 0;
+    });
+  }
+  return buildMessageSearchPage({
+    rows: visible.slice(0, normalized.limit + 1),
+    total: rows.length,
+    normalized
+  });
+}
+
+/**
+ * Compare two search rows for date or UID ordering.
+ * @param {object} left SQL-shaped row.
+ * @param {object} right SQL-shaped row.
+ * @param {object} normalized Search criteria.
+ * @returns {number} Negative when left sorts first in ascending order.
+ */
+function compareSearchRows(left, right, normalized) {
+  const leftValue = normalized.sortBy === 'uid' ? left.uid : left.sort_date;
+  const rightValue = normalized.sortBy === 'uid' ? right.uid : right.sort_date;
+  const compared = compareSortValue(leftValue, rightValue);
+  if (compared !== 0) return compared;
+  if (left.message_key < right.message_key) return -1;
+  if (left.message_key > right.message_key) return 1;
+  return 0;
+}
+
+/**
+ * Compare cursor sort values.
+ * @param {string|number} left Left value.
+ * @param {string|number} right Right value.
+ * @returns {number} Negative when left is smaller.
+ */
+function compareSortValue(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 function appliedFilters(normalized) {
   return {
     query: normalized.query,

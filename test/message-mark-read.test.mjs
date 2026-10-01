@@ -62,7 +62,7 @@ function closeFixture(store, dir) {
  * @param {{ storeCalls?: object[] }} [options]
  * @returns {{ service: MailService, calls: object[] }}
  */
-function serviceFor(store, registry, { failValidity = false } = {}) {
+function serviceFor(store, registry, { failValidity = false, flags = [], fetchUid = null } = {}) {
   const calls = [];
   const service = new MailService({
     accountRegistry: registry,
@@ -71,6 +71,18 @@ function serviceFor(store, registry, { failValidity = false } = {}) {
       release: async () => { calls.push({ op: 'release' }); }
     },
     providerFactory: async () => ({
+      fetchMessage: async (identity) => {
+        calls.push({ op: 'fetch', mailbox: identity.mailboxId, uid: identity.uid, uidValidity: identity.uidValidity });
+        if (Number(identity.uid) === 99) return null;
+        return {
+          uid: fetchUid ?? Number(identity.uid),
+          uidValidity: identity.uidValidity,
+          flags,
+          raw: 'From: a@example.test\r\n\r\nHi',
+          envelope: { subject: 'Hello' },
+          attachments: []
+        };
+      },
       markRead: async (mailbox, uid, uidValidity) => {
         calls.push({ op: 'markRead', mailbox, uid, uidValidity });
         if (failValidity || String(uidValidity) !== '42') throw new Error('identity_mismatch');
@@ -90,7 +102,7 @@ function serviceFor(store, registry, { failValidity = false } = {}) {
 test('message_mark_read stores \\Seen only for the exact account, mailbox, and message', async () => {
   const { dir, store, registry, messageKey } = openFixture();
   const { service, calls } = serviceFor(store, registry);
-  const handler = createMessageMarkReadHandler({ store, registry, mailService: service });
+  const handler = createMessageMarkReadHandler({ registry, mailService: service });
   const payload = JSON.parse((await handler({ messageKey })).content[0].text);
   assert.equal(payload.messageKey, MESSAGE_KEY);
   assert.equal(payload.accountId, 'info');
@@ -99,11 +111,11 @@ test('message_mark_read stores \\Seen only for the exact account, mailbox, and m
   assert.equal(payload.uidValidity, '42');
   assert.deepEqual(calls.filter((call) => call.op === 'markRead'), [{
     op: 'markRead',
-    mailbox: 'INBOX',
+    mailbox: 'inbox',
     uid: 7,
     uidValidity: '42'
   }]);
-  assert.equal(store.getMessage(messageKey).flags.includes('\\Seen'), true);
+  assert.equal(store.getMessage(messageKey).flags.includes('\\Seen'), false);
   assert.equal(payload.raw, undefined);
   assert.equal(payload.password, undefined);
   closeFixture(store, dir);
@@ -112,7 +124,7 @@ test('message_mark_read stores \\Seen only for the exact account, mailbox, and m
 test('message_mark_read fails closed when the message key is missing', async () => {
   const { dir, store, registry } = openFixture();
   const { service, calls } = serviceFor(store, registry);
-  const handler = createMessageMarkReadHandler({ store, registry, mailService: service });
+  const handler = createMessageMarkReadHandler({ registry, mailService: service });
   const missing = JSON.parse((await handler({})).content[0].text);
   const blank = JSON.parse((await handler({ messageKey: '   ' })).content[0].text);
   assert.equal(missing.error, 'message_key_required');
@@ -126,7 +138,7 @@ test('message_mark_read fails closed when the account is not accessible', async 
   const { dir, store } = openFixture();
   const other = createPrincipalRegistry(store, 'other-user');
   const { service, calls } = serviceFor(store, other);
-  const handler = createMessageMarkReadHandler({ store, registry: other, mailService: service });
+  const handler = createMessageMarkReadHandler({ registry: other, mailService: service });
   const payload = JSON.parse((await handler({ messageKey: MESSAGE_KEY })).content[0].text);
   assert.equal(payload.error, 'access_denied');
   assert.equal(calls.some((call) => call.op === 'markRead'), false);
@@ -137,47 +149,49 @@ test('message_mark_read fails closed when the account is not accessible', async 
 test('message_mark_read fails closed when the message key is unknown', async () => {
   const { dir, store, registry } = openFixture();
   const { service, calls } = serviceFor(store, registry);
-  const handler = createMessageMarkReadHandler({ store, registry, mailService: service });
+  const handler = createMessageMarkReadHandler({ registry, mailService: service });
   const payload = JSON.parse((await handler({ messageKey: 'info:inbox:42:99' })).content[0].text);
   assert.equal(payload.error, 'source_message_not_found');
   assert.equal(calls.some((call) => call.op === 'markRead'), false);
   closeFixture(store, dir);
 });
 
-test('message_mark_read fails closed when stored identity does not match the key', async () => {
+test('message_mark_read fails closed when the provider UID does not match the key', async () => {
   const { dir, store, registry } = openFixture();
-  store.db.prepare('UPDATE messages SET uid = ? WHERE message_key = ?').run(8, MESSAGE_KEY);
-  const { service, calls } = serviceFor(store, registry);
-  const handler = createMessageMarkReadHandler({ store, registry, mailService: service });
+  const { service, calls } = serviceFor(store, registry, { fetchUid: 8 });
+  const handler = createMessageMarkReadHandler({ registry, mailService: service });
   const payload = JSON.parse((await handler({ messageKey: MESSAGE_KEY })).content[0].text);
   assert.equal(payload.error, 'identity_mismatch');
   assert.equal(calls.some((call) => call.op === 'markRead'), false);
+  assert.equal(store.getMessage(MESSAGE_KEY).flags.includes('\\Seen'), false);
   closeFixture(store, dir);
 });
 
-test('message_mark_read selects the stored mailbox path and skips STORE on UIDVALIDITY mismatch', async () => {
+test('message_mark_read uses the key mailbox and does not write local flags', async () => {
   const { dir, store, registry } = openFixture({ path: 'INBOX.Work' });
   const mismatch = serviceFor(store, registry, { failValidity: true });
-  await assert.rejects(() => mismatch.service.markRead(MESSAGE_KEY, store), /identity_mismatch/);
+  await assert.rejects(() => mismatch.service.markRead(MESSAGE_KEY), /identity_mismatch/);
   assert.deepEqual(mismatch.calls.filter((call) => call.op === 'markRead'), [{
     op: 'markRead',
-    mailbox: 'INBOX.Work',
+    mailbox: 'inbox',
     uid: 7,
     uidValidity: '42'
   }]);
   assert.equal(store.getMessage(MESSAGE_KEY).flags.includes('\\Seen'), false);
 
   const matched = serviceFor(store, registry);
-  const result = await matched.service.markRead(MESSAGE_KEY, store);
+  const result = await matched.service.markRead(MESSAGE_KEY);
   assert.equal(result.mailboxId, 'inbox');
-  assert.deepEqual(matched.calls.filter((call) => call.op === 'markRead')[0].mailbox, 'INBOX.Work');
+  assert.equal(result.flags.includes('\\Seen'), true);
+  assert.deepEqual(matched.calls.filter((call) => call.op === 'markRead')[0].mailbox, 'inbox');
+  assert.equal(store.getMessage(MESSAGE_KEY).flags.includes('\\Seen'), false);
   closeFixture(store, dir);
 });
 
-test('message_read stores \\Seen after resolving the exact local message', async () => {
+test('message_read sets \\Seen from the live message and does not write local flags', async () => {
   const { dir, store, registry, messageKey } = openFixture({ flags: ['\\Flagged'] });
-  const { service, calls } = serviceFor(store, registry);
-  const handler = createMessageReadHandler({ store, registry, mailService: service });
+  const { service, calls } = serviceFor(store, registry, { flags: ['\\Flagged'] });
+  const handler = createMessageReadHandler({ registry, mailService: service });
   const payload = JSON.parse((await handler({ messageKey })).content[0].text);
   assert.equal(payload.key, MESSAGE_KEY);
   assert.equal(payload.raw.includes('Hi'), true);
@@ -185,19 +199,19 @@ test('message_read stores \\Seen after resolving the exact local message', async
   assert.equal(payload.flags.includes('\\Flagged'), true);
   assert.deepEqual(calls.filter((call) => call.op === 'markRead'), [{
     op: 'markRead',
-    mailbox: 'INBOX',
+    mailbox: 'inbox',
     uid: 7,
     uidValidity: '42'
   }]);
   assert.equal(calls.some((call) => call.op === 'markUnread'), false);
-  assert.equal(store.getMessage(messageKey).flags.includes('\\Seen'), true);
+  assert.equal(store.getMessage(messageKey).flags.includes('\\Seen'), false);
   closeFixture(store, dir);
 });
 
 test('message_read fails closed when the provider mark fails', async () => {
   const { dir, store, registry } = openFixture();
   const { service, calls } = serviceFor(store, registry, { failValidity: true });
-  const handler = createMessageReadHandler({ store, registry, mailService: service });
+  const handler = createMessageReadHandler({ registry, mailService: service });
   const payload = JSON.parse((await handler({ messageKey: MESSAGE_KEY })).content[0].text);
   assert.equal(payload.error, 'identity_mismatch');
   assert.equal(payload.raw, undefined);
@@ -209,13 +223,13 @@ test('message_read fails closed when the provider mark fails', async () => {
 test('message_read fails closed on a missing key, unknown message, or denied account', async () => {
   const { dir, store, registry } = openFixture();
   const { service, calls } = serviceFor(store, registry);
-  const handler = createMessageReadHandler({ store, registry, mailService: service });
+  const handler = createMessageReadHandler({ registry, mailService: service });
   const missing = JSON.parse((await handler({})).content[0].text);
   const unknown = JSON.parse((await handler({ messageKey: 'info:inbox:42:99' })).content[0].text);
   assert.equal(missing.error, 'message_key_required');
   assert.equal(unknown.error, 'source_message_not_found');
   const other = createPrincipalRegistry(store, 'other-user');
-  const deniedHandler = createMessageReadHandler({ store, registry: other, mailService: service });
+  const deniedHandler = createMessageReadHandler({ registry: other, mailService: service });
   const denied = JSON.parse((await deniedHandler({ messageKey: MESSAGE_KEY })).content[0].text);
   assert.equal(denied.error, 'access_denied');
   assert.equal(calls.some((call) => call.op === 'markRead'), false);
@@ -223,10 +237,10 @@ test('message_read fails closed on a missing key, unknown message, or denied acc
   closeFixture(store, dir);
 });
 
-test('message_mark_unread removes \\Seen only for the exact account, mailbox, and message', async () => {
+test('message_mark_unread clears \\Seen on the provider and does not write local flags', async () => {
   const { dir, store, registry, messageKey } = openFixture({ flags: ['\\Seen', '\\Flagged'] });
-  const { service, calls } = serviceFor(store, registry);
-  const handler = createMessageMarkUnreadHandler({ store, registry, mailService: service });
+  const { service, calls } = serviceFor(store, registry, { flags: ['\\Seen', '\\Flagged'] });
+  const handler = createMessageMarkUnreadHandler({ registry, mailService: service });
   const payload = JSON.parse((await handler({ messageKey })).content[0].text);
   assert.equal(payload.messageKey, MESSAGE_KEY);
   assert.equal(payload.uid, 7);
@@ -235,12 +249,12 @@ test('message_mark_unread removes \\Seen only for the exact account, mailbox, an
   assert.equal(payload.flags.includes('\\Flagged'), true);
   assert.deepEqual(calls.filter((call) => call.op === 'markUnread'), [{
     op: 'markUnread',
-    mailbox: 'INBOX',
+    mailbox: 'inbox',
     uid: 7,
     uidValidity: '42'
   }]);
   assert.equal(calls.some((call) => call.op === 'markRead'), false);
-  assert.equal(store.getMessage(messageKey).flags.includes('\\Seen'), false);
+  assert.equal(store.getMessage(messageKey).flags.includes('\\Seen'), true);
   assert.equal(payload.raw, undefined);
   closeFixture(store, dir);
 });
@@ -248,17 +262,19 @@ test('message_mark_unread removes \\Seen only for the exact account, mailbox, an
 test('message_mark_unread fails closed when identity or access does not match', async () => {
   const { dir, store, registry } = openFixture({ flags: ['\\Seen'] });
   const { service, calls } = serviceFor(store, registry);
-  const handler = createMessageMarkUnreadHandler({ store, registry, mailService: service });
+  const handler = createMessageMarkUnreadHandler({ registry, mailService: service });
   const missing = JSON.parse((await handler({})).content[0].text);
   const unknown = JSON.parse((await handler({ messageKey: 'info:inbox:42:99' })).content[0].text);
   assert.equal(missing.error, 'message_key_required');
   assert.equal(unknown.error, 'source_message_not_found');
-  store.db.prepare('UPDATE messages SET uid = ? WHERE message_key = ?').run(8, MESSAGE_KEY);
-  const mismatch = JSON.parse((await handler({ messageKey: MESSAGE_KEY })).content[0].text);
+  const mismatched = serviceFor(store, registry, { flags: ['\\Seen'], fetchUid: 8 });
+  const mismatch = JSON.parse((await createMessageMarkUnreadHandler({
+    registry,
+    mailService: mismatched.service
+  })({ messageKey: MESSAGE_KEY })).content[0].text);
   assert.equal(mismatch.error, 'identity_mismatch');
   const other = createPrincipalRegistry(store, 'other-user');
   const denied = JSON.parse((await createMessageMarkUnreadHandler({
-    store,
     registry: other,
     mailService: service
   })({ messageKey: MESSAGE_KEY })).content[0].text);
@@ -270,11 +286,11 @@ test('message_mark_unread fails closed when identity or access does not match', 
 
 test('message_mark_unread skips STORE and local flag removal when UIDVALIDITY mismatches', async () => {
   const { dir, store, registry } = openFixture({ flags: ['\\Seen'], path: 'INBOX.Work' });
-  const mismatch = serviceFor(store, registry, { failValidity: true });
-  await assert.rejects(() => mismatch.service.markUnread(MESSAGE_KEY, store), /identity_mismatch/);
+  const mismatch = serviceFor(store, registry, { failValidity: true, flags: ['\\Seen'] });
+  await assert.rejects(() => mismatch.service.markUnread(MESSAGE_KEY), /identity_mismatch/);
   assert.deepEqual(mismatch.calls.filter((call) => call.op === 'markUnread'), [{
     op: 'markUnread',
-    mailbox: 'INBOX.Work',
+    mailbox: 'inbox',
     uid: 7,
     uidValidity: '42'
   }]);

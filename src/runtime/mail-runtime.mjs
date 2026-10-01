@@ -12,8 +12,7 @@ const SMTP_FIELDS = ['outgoing.host', 'outgoing.port', 'outgoing.security', 'out
 
 /**
  * Wire store, principal-scoped registry, SecretFabric lease broker, and mailService.
- * Does not start mailbox sync. The long-lived worker calls mailService.syncAccount on its interval
- * and opens a separate Inbox IDLE connection through mailService.openIdleWatch.
+ * Does not start mailbox sync or IMAP IDLE. Interactive tools use mailService against the live provider.
  * @param {import('../config.mjs').AgentMailConfig} config Validated runtime configuration.
  * @param {{ fetchImpl?: typeof fetch, providerFactory?: Function }} [options] Optional test seams.
  * @returns {{ config: import('../config.mjs').AgentMailConfig, store: SqliteMailStore, registry: object, mailService: MailService, close: () => void }}

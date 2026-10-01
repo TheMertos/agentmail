@@ -11,7 +11,7 @@ function text(value) {
 }
 
 /** MCP description for message_mark_unread. */
-export const messageMarkUnreadDescription = 'Clear the provider IMAP \\Seen flag for one exact messageKey. Performs UID STORE -FLAGS \\Seen only when explicitly called for that accessible account, mailbox, UID, and UIDVALIDITY. Passive sync, IDLE, search, flags reconciliation, attachment extraction, and header-only reads do not STORE flags. It does not send mail.';
+export const messageMarkUnreadDescription = 'Clear the provider IMAP \\Seen flag for one exact messageKey. Performs UID STORE -FLAGS \\Seen only when explicitly called for that accessible account, mailbox, UID, and UIDVALIDITY on the live IMAP server. Does not write flags locally and does not fall back to a mirror. Passive sync, IDLE, search, flags reconciliation, attachment extraction, and header-only reads do not STORE flags. It does not send mail.';
 
 /** Zod input schema for message_mark_unread. Only an exact message key is accepted. */
 export const messageMarkUnreadInputSchema = {
@@ -23,9 +23,9 @@ export const messageMarkUnreadInputSchema = {
  * @param {{ store: object, registry: { assertAccountAccess: Function }, mailService: { markUnread: Function } }} deps Store, principal registry, and mail service.
  * @returns {(args: { messageKey?: string }) => Promise<{ content: { type: string, text: string }[] }>}
  */
-export function createMessageMarkUnreadHandler({ store, registry, mailService }) {
+export function createMessageMarkUnreadHandler({ registry, mailService }) {
   /**
-   * Mark one mirrored message unread on the provider.
+   * Mark one live message unread on the provider.
    * @param {{ messageKey?: string }} args Tool input.
    * @returns {Promise<{ content: { type: string, text: string }[] }>}
    */
@@ -38,7 +38,7 @@ export function createMessageMarkUnreadHandler({ store, registry, mailService })
       return text({ error: 'access_denied' });
     }
     try {
-      return text(await mailService.markUnread(messageKey, store));
+      return text(await mailService.markUnread(messageKey));
     } catch (error) {
       return text({ error: redactToolError(error) });
     }

@@ -35,29 +35,20 @@ test('buildSyncStatus merges background job metadata when provided', () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('sync_status MCP handler includes job state from sync job service', async () => {
+test('sync_status MCP handler does not report local sync jobs', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agentmail-mcp-job-'));
   const store = new SqliteMailStore(join(dir, 'mail.db'));
   activateTestAccount(store, { id: 'acct', email: 'u@example.test', provider: 'imap', secretRef: 'opaque-ref' });
   const registry = createPrincipalRegistry(store, TEST_PRINCIPAL);
-  const syncJobService = {
-    getJobStatus: (accountId) => (accountId === 'acct' ? {
-      jobId: '22222222-2222-4222-8222-222222222222',
-      accountId: 'acct',
-      mode: 'full',
-      state: 'queued',
-      startedAt: null,
-      completedAt: null,
-      error: null
-    } : null)
-  };
-  const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ store, registry, syncJobService });
+  const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ registry });
   const payload = JSON.parse(syncStatus({ accountId: 'acct' }).content[0].text);
-  assert.equal(payload.job.state, 'queued');
-  assert.equal(payload.job.jobId, '22222222-2222-4222-8222-222222222222');
+  assert.equal(payload.mode, 'remote-only');
+  assert.equal(payload.syncEnabled, false);
+  assert.equal(payload.job, undefined);
 
   const allPayload = JSON.parse(syncStatusAll().content[0].text);
-  assert.equal(allPayload.accounts[0].job.state, 'queued');
+  assert.equal(allPayload.accounts[0].job, undefined);
+  assert.equal(allPayload.syncEnabled, false);
   store.close();
   rmSync(dir, { recursive: true, force: true });
 });

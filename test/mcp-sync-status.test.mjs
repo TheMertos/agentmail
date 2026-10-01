@@ -28,13 +28,18 @@ test('sync_status MCP handler returns structured folder progress without credent
   const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ store, registry });
   const payload = JSON.parse(syncStatus({ accountId: 'acct' }).content[0].text);
   assert.equal(payload.accountId, 'acct');
-  assert.equal(payload.folders[0].percentage, null);
-  assert.equal(typeof payload.folders[0].percentageReason, 'string');
+  assert.equal(payload.mode, 'remote-only');
+  assert.equal(payload.syncEnabled, false);
+  assert.equal(payload.idleEnabled, false);
+  assert.deepEqual(payload.folders, []);
+  assert.equal(payload.percentage, null);
+  assert.equal(JSON.stringify(payload).includes('INBOX'), false);
   assert.equal(payload.secretRef, undefined);
   assert.equal(payload.password, undefined);
 
   const allPayload = JSON.parse(syncStatusAll().content[0].text);
   assert.equal(allPayload.accounts.length, 1);
+  assert.equal(allPayload.syncEnabled, false);
   store.close();
   rmSync(dir, { recursive: true, force: true });
 });

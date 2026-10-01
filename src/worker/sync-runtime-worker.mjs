@@ -1,18 +1,15 @@
 import { fileURLToPath } from 'node:url';
-import { loadWorkerConfig } from '../config.mjs';
 import { redactSensitiveText } from '../security/redact.mjs';
-import { createMailRuntime } from '../runtime/mail-runtime.mjs';
-import { startDurableSyncWorker } from './durable-sync.mjs';
 
 /**
- * Long-lived container entrypoint.
- * Loads profile-scoped config and runs mailbox sync on its own interval through mailService.
- * Does not attach MCP stdio and does not wait for another process to enqueue or finish sync.
+ * Worker entrypoint is disabled in remote-only mode.
+ * It does not open SQLite, SecretFabric, IMAP, or IMAP IDLE.
+ * @returns {never}
  */
 export function runSyncRuntimeWorker() {
-  const config = loadWorkerConfig();
-  const runtime = createMailRuntime(config);
-  startDurableSyncWorker(runtime);
+  const error = new Error('remote_only_sync_disabled');
+  error.code = 'remote_only_sync_disabled';
+  throw error;
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];

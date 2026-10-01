@@ -245,10 +245,10 @@ test('an idle timeout recycles the connection without blocking the worker', asyn
   }
 });
 
-test('the interval scheduler still syncs after idle reconnects are exhausted', async () => {
+test('the durable worker does not start IDLE or interval sync', async () => {
   const syncs = [];
   let idleOpens = 0;
-  const { stop } = startDurableSyncWorker({
+  const running = startDurableSyncWorker({
     config: { syncIntervalSeconds: 0.05 },
     registry: {
       list: () => [{ id: 'a' }],
@@ -262,33 +262,22 @@ test('the interval scheduler still syncs after idle reconnects are exhausted', a
       }
     },
     store: {}
-  }, {
-    idle: {
-      maxAttempts: 2,
-      initialBackoffMs: 5,
-      maxBackoffMs: 5,
-      idleTimeoutMs: 50,
-      debounceMs: 5,
-      sleep: async () => {}
-    }
   });
 
   try {
-    await waitFor(() => idleOpens >= 2 && syncs.length >= 2, 1000);
-    await delay(40);
-    assert.equal(idleOpens, 2);
-    assert.ok(syncs.length >= 2);
-    assert.ok(syncs.every((accountId) => accountId === 'a'));
+    await delay(80);
+    assert.equal(running.idleEnabled, false);
+    assert.equal(running.syncEnabled, false);
+    assert.equal(idleOpens, 0);
+    assert.deepEqual(syncs, []);
   } finally {
-    await stop();
+    await running.stop();
   }
 });
 
-test('idle does not start a second sync while that account sync is in progress', async () => {
+test('disabled durable worker does not open IDLE while a sync would have been in progress', async () => {
   let calls = 0;
-  let releaseSync = () => {};
-  let client;
-  const { stop } = startDurableSyncWorker({
+  const running = startDurableSyncWorker({
     config: { syncIntervalSeconds: 3600 },
     registry: {
       list: () => [{ id: 'a' }],
@@ -297,36 +286,22 @@ test('idle does not start a second sync while that account sync is in progress',
     mailService: {
       syncAccount: () => {
         calls += 1;
-        return new Promise((resolve) => { releaseSync = () => resolve({ ok: true }); });
+        return Promise.resolve({ ok: true });
       },
       openIdleWatch: async () => {
-        client = createIdleClient();
-        return sessionFor(client);
+        calls += 1;
+        return sessionFor(createIdleClient());
       }
     },
     store: {}
-  }, {
-    idle: {
-      debounceMs: 20,
-      idleTimeoutMs: 5_000,
-      maxAttempts: 2,
-      initialBackoffMs: 1_000,
-      maxBackoffMs: 1_000
-    }
   });
 
   try {
-    await waitFor(() => calls === 1 && client?.commands.includes('idle'));
-    client.emit('exists', { path: 'INBOX', count: 4, prevCount: 3 });
-    await delay(50);
-    assert.equal(calls, 1);
-    releaseSync();
-    await waitFor(() => calls === 2);
-    await delay(30);
-    assert.equal(calls, 2);
+    await delay(40);
+    assert.equal(calls, 0);
+    assert.equal(running.idleEnabled, false);
   } finally {
-    releaseSync();
-    await stop();
+    await running.stop();
   }
 });
 
@@ -359,84 +334,51 @@ test('the same account never overlaps sync and another account can run beside it
   assert.equal(maxTotal, 2);
 });
 
-test('shutdown releases the idle provider and the SecretFabric lease', async () => {
-  const releases = [];
-  let leaseId;
-  const broker = createLeaseBroker({
-    resolver: async () => ({ username: 'mailbox-user', password: 'mailbox-secret' })
-  });
+test('MailService does not open an IDLE lease', async () => {
+  let acquired = 0;
   const service = new MailService({
     accountRegistry: {
       get: () => ({ id: 'a', secretRef: 'sf-ref', connection: { host: 'imap.test', port: 993, security: 'tls' } })
     },
-    leaseBroker: broker,
-    providerFactory: async ({ operation, lease }) => {
-      assert.equal(operation, 'imap-idle');
-      assert.equal(JSON.stringify(lease).includes('mailbox-secret'), false);
-      assert.equal(lease.credentials.password, 'mailbox-secret');
-      leaseId = lease.leaseId;
-      const client = createIdleClient();
-      return client;
-    }
+    leaseBroker: {
+      acquire: async () => { acquired += 1; return { leaseId: 'lease-idle' }; },
+      release: async () => {}
+    },
+    providerFactory: async () => createIdleClient()
   });
-  const watcher = startInboxIdleWatcher({
-    accountId: 'a',
-    debounceMs: 20,
-    idleTimeoutMs: 5_000,
-    maxAttempts: 2,
-    initialBackoffMs: 1_000,
-    maxBackoffMs: 1_000,
-    openSession: () => service.openIdleWatch('a'),
-    onChange: () => { releases.push('sync'); }
-  });
-
-  try {
-    await waitFor(() => Boolean(leaseId));
-    const opened = broker.getPrivate(leaseId);
-    assert.equal(opened.password, 'mailbox-secret');
-  } finally {
-    const started = Date.now();
-    await watcher.stop();
-    assert.ok(Date.now() - started < 300);
-  }
-
-  assert.equal(broker.getPrivate(leaseId), null);
-  assert.deepEqual(releases, []);
+  await assert.rejects(() => service.openIdleWatch('a'), /remote_only_idle_disabled/);
+  assert.equal(acquired, 0);
 });
 
-test('openIdleWatch releases the lease when the provider cannot be opened', async () => {
-  let released = null;
+test('openIdleWatch fails closed and does not acquire a lease', async () => {
+  let acquired = 0;
   const service = new MailService({
     accountRegistry: { get: () => ({ id: 'a' }) },
     leaseBroker: {
-      acquire: async () => ({ leaseId: 'lease-idle' }),
-      release: async (lease) => { released = lease.leaseId; }
+      acquire: async () => { acquired += 1; return { leaseId: 'lease-idle' }; },
+      release: async () => {}
     },
     providerFactory: async () => { throw new Error('connect_failed'); }
   });
-  await assert.rejects(() => service.openIdleWatch('a'), /connect_failed/);
-  assert.equal(released, 'lease-idle');
+  await assert.rejects(() => service.openIdleWatch('a'), /remote_only_idle_disabled/);
+  assert.equal(acquired, 0);
 });
 
-test('mailbox sync uses a different client from the idle watcher', async () => {
-  const clients = [];
+test('mailbox sync and idle stay disabled on MailService', async () => {
   const service = new MailService({
     accountRegistry: { get: () => ({ id: 'a' }) },
     leaseBroker: {
-      acquire: async ({ purpose }) => ({ leaseId: `lease-${purpose}` }),
+      acquire: async () => ({ leaseId: 'lease' }),
       release: async () => {}
     },
-    providerFactory: async ({ operation }) => {
-      const client = createIdleClient();
-      client.operation = operation;
-      client.listMailboxes = async () => {
-        client.commands.push('listMailboxes');
-        return [];
-      };
-      clients.push(client);
-      return client;
-    }
+    providerFactory: async () => createIdleClient()
   });
+  await assert.rejects(() => service.openIdleWatch('a'), /remote_only_idle_disabled/);
+  await assert.rejects(() => service.syncAccount('a', { mode: 'incremental', store: {} }), /remote_only_sync_disabled/);
+});
+
+test('a direct idle watcher still uses its own client', async () => {
+  const clients = [];
   const watcher = startInboxIdleWatcher({
     accountId: 'a',
     debounceMs: 20,
@@ -444,23 +386,21 @@ test('mailbox sync uses a different client from the idle watcher', async () => {
     maxAttempts: 2,
     initialBackoffMs: 1_000,
     maxBackoffMs: 1_000,
-    openSession: () => service.openIdleWatch('a'),
-    onChange: () => service.syncAccount('a', {
-      mode: 'incremental',
-      store: { getCheckpoint: async () => null }
-    })
+    openSession: async () => {
+      const client = createIdleClient();
+      client.operation = 'imap-idle';
+      clients.push(client);
+      return sessionFor(client);
+    },
+    onChange: () => {}
   });
 
   try {
-    await waitFor(() => clients.some((client) => client.operation === 'imap-idle' && client.commands.includes('idle')));
+    await waitFor(() => clients.some((client) => client.commands.includes('idle')));
     const idle = clients.find((client) => client.operation === 'imap-idle');
-    idle.emit('exists', { path: 'INBOX', count: 2, prevCount: 1 });
-    await waitFor(() => clients.some((client) => client.operation === 'imap-sync'));
-    const sync = clients.find((client) => client.operation === 'imap-sync');
-    assert.notEqual(idle, sync);
+    assert.ok(idle);
     assert.equal(idle.commands.includes('listMailboxes'), false);
-    assert.equal(sync.commands.includes('idle'), false);
-    assert.equal(sync.commands.includes('listMailboxes'), true);
+    assert.equal(idle.commands.includes('idle'), true);
   } finally {
     await watcher.stop();
   }
@@ -488,6 +428,8 @@ test('MCP does not start idle or mailbox sync', () => {
   const server = readFileSync(join(repoRoot, 'src/mcp/server.mjs'), 'utf8');
   const worker = readFileSync(join(repoRoot, 'src/worker/durable-sync.mjs'), 'utf8');
   assert.doesNotMatch(server, /openIdleWatch|startInboxIdle|imap-idle|syncAccount\(/);
-  assert.match(worker, /openIdleWatch/);
-  assert.match(worker, /mailService\.syncAccount/);
+  assert.doesNotMatch(worker, /openIdleWatch/);
+  assert.doesNotMatch(worker, /mailService\.syncAccount/);
+  assert.match(worker, /syncEnabled: false/);
+  assert.match(worker, /idleEnabled: false/);
 });

@@ -12,4 +12,4 @@ COPY package.json yarn.lock ./
 COPY src ./src
 RUN addgroup -S -g 1001 agentmail && adduser -S -u 1001 -G agentmail agentmail && mkdir /data && chown agentmail:agentmail /data
 USER agentmail
-ENTRYPOINT ["node", "src/worker/sync-runtime-worker.mjs"]
+ENTRYPOINT ["node", "src/mcp/server.mjs"]

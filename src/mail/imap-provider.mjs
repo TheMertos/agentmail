@@ -460,13 +460,216 @@ export class ImapProvider {
   }
 
   /**
+   * Search one mailbox on the live server and return summaries. Does not STORE and does not persist MIME.
+   * After SEARCH, FETCH loads only the UID window for the requested limit and sort order.
+   * FETCH uses ENVELOPE, FLAGS, and BODYSTRUCTURE, which do not set \\Seen.
+   * @param {{ path: string, id?: string }} mailbox Mailbox to search.
+   * @param {object} criteria Normalized search criteria.
+   * @returns {Promise<object[]>} Matching summaries for this mailbox.
+   */
+  async searchSummaries(mailbox, criteria) {
+    if (!mailbox?.path) throw new Error('invalid_mailbox');
+    await this.connect();
+    const lock = await this.#deadline(
+      this.client.getMailboxLock(mailbox.path, { acquireTimeout: this.operationTimeoutMs }),
+      'lock'
+    );
+    try {
+      const status = await this.#deadline(
+        this.client.status(mailbox.path, { uidValidity: true }),
+        'status'
+      );
+      if (status?.uidValidity == null || status.uidValidity === '') throw new Error('identity_mismatch');
+      const found = await this.#deadline(
+        this.client.search(imapSearchQuery(criteria), { uid: true }),
+        'search'
+      );
+      const uids = selectSearchUids(found, criteria);
+      if (uids.length === 0) return [];
+      const hits = [];
+      const size = 100;
+      for (let index = 0; index < uids.length; index += size) {
+        const query = uids.slice(index, index + size).join(',');
+        const iterator = this.client.fetch(query, {
+          uid: true,
+          flags: true,
+          internalDate: true,
+          envelope: true,
+          bodyStructure: true
+        }, { uid: true })[Symbol.asyncIterator]();
+        try {
+          while (true) {
+            const next = await this.#deadline(iterator.next(), 'fetch');
+            if (next.done) break;
+            const message = next.value;
+            const flags = this.#flagList(message.flags);
+            const uid = Number(message.uid);
+            hits.push({
+              key: `${mailbox.id ?? mailbox.path}:${String(status.uidValidity)}:${uid}`,
+              mailboxId: mailbox.path,
+              uid,
+              uidValidity: String(status.uidValidity),
+              internalDate: message.internalDate?.toISOString?.() ?? null,
+              flags,
+              envelope: message.envelope ?? null,
+              hasAttachment: structureHasAttachment(message.bodyStructure)
+            });
+          }
+        } finally {
+          const returned = iterator.return?.();
+          if (returned && typeof returned.catch === 'function') returned.catch(() => {});
+        }
+      }
+      return hits;
+    } finally {
+      this.#release(lock);
+    }
+  }
+
+  /**
+   * Fetch one message by UID after UIDVALIDITY matches. BODY.PEEK via source does not set \\Seen.
+   * @param {{ mailboxId: string, uid: number, uidValidity: string|number }} identity Exact message identity.
+   * @returns {Promise<object|null>} Message summary, or null when the UID is gone.
+   */
+  async fetchMessage({ mailboxId, uid, uidValidity }) {
+    const numericUid = Number(uid);
+    if (!mailboxId || !Number.isInteger(numericUid) || numericUid <= 0 || uidValidity == null || uidValidity === '') {
+      throw new Error('identity_mismatch');
+    }
+    await this.connect();
+    const lock = await this.#deadline(
+      this.client.getMailboxLock(mailboxId, { acquireTimeout: this.operationTimeoutMs }),
+      'lock'
+    );
+    try {
+      const status = await this.#deadline(
+        this.client.status(mailboxId, { uidValidity: true }),
+        'status'
+      );
+      if (String(status?.uidValidity) !== String(uidValidity)) throw new Error('identity_mismatch');
+      const message = await this.#deadline(
+        this.client.fetchOne(String(numericUid), {
+          uid: true,
+          flags: true,
+          internalDate: true,
+          envelope: true,
+          source: true
+        }, { uid: true }),
+        'fetch'
+      );
+      if (!message?.uid) return null;
+      const raw = message.source?.toString('utf8') ?? '';
+      return {
+        mailboxId,
+        uid: Number(message.uid),
+        uidValidity: String(uidValidity),
+        flags: this.#flagList(message.flags),
+        internalDate: message.internalDate?.toISOString?.() ?? null,
+        envelope: message.envelope ?? null,
+        raw,
+        attachments: raw ? await extractIncomingAttachments(raw) : []
+      };
+    } finally {
+      this.#release(lock);
+    }
+  }
+
+  /**
    * Close the current connection when it is open.
    * @returns {Promise<void>}
    */
   async close() {
-    if (this.connected) {
-      this.connected = false;
-      await this.client.logout().catch(() => this.client.close());
+    const client = this.client;
+    const wasConnected = this.connected;
+    this.connected = false;
+    if (!wasConnected || !client) return;
+    let timer;
+    const logout = Promise.resolve()
+      .then(() => client.logout())
+      .catch(() => client.close?.());
+    logout.catch(() => {});
+    try {
+      await Promise.race([
+        logout,
+        new Promise((resolve) => {
+          timer = setTimeout(() => {
+            try {
+              client.close?.();
+            } catch {
+              // The socket may already be gone.
+            }
+            resolve();
+          }, this.operationTimeoutMs);
+        })
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
   }
+}
+
+/** Page size used when a live search omits a limit. Matches message search. */
+const SEARCH_UID_LIMIT_DEFAULT = 50;
+
+/** Upper bound for one live search FETCH window. Matches message search. */
+const SEARCH_UID_LIMIT_MAX = 200;
+
+/**
+ * Keep the UID window requested by sort order so FETCH does not load every SEARCH hit.
+ * Descending order keeps the newest (highest) UIDs. Ascending order keeps the oldest (lowest) UIDs.
+ * @param {unknown} found UIDs returned by IMAP SEARCH.
+ * @param {object} criteria Normalized search criteria. Uses limit and sortOrder.
+ * @returns {number[]} UIDs to FETCH, at most the requested limit.
+ */
+function selectSearchUids(found, criteria) {
+  const uids = Array.isArray(found)
+    ? found.map((uid) => Number(uid)).filter((uid) => Number.isInteger(uid) && uid > 0)
+    : [];
+  if (uids.length === 0) return [];
+  const limit = searchUidLimit(criteria?.limit);
+  const ordered = [...uids].sort((left, right) => left - right);
+  if (criteria?.sortOrder === 'asc') return ordered.slice(0, limit);
+  return ordered.slice(-limit);
+}
+
+/**
+ * Clamp the requested page size used to bound a search FETCH.
+ * @param {unknown} limit Requested limit.
+ * @returns {number} Positive limit from 1 through 200, or the default of 50.
+ */
+function searchUidLimit(limit) {
+  if (!Number.isInteger(limit) || limit < 1) return SEARCH_UID_LIMIT_DEFAULT;
+  return Math.min(limit, SEARCH_UID_LIMIT_MAX);
+}
+
+/**
+ * Build an ImapFlow SEARCH query. An empty filter searches all messages.
+ * @param {object} criteria Normalized criteria.
+ * @returns {object} ImapFlow search query.
+ */
+function imapSearchQuery(criteria) {
+  const query = {};
+  if (criteria?.subject) query.subject = criteria.subject;
+  if (criteria?.from) query.from = criteria.from;
+  if (criteria?.to) query.to = criteria.to;
+  if (criteria?.cc) query.cc = criteria.cc;
+  if (criteria?.query) query.text = criteria.query;
+  if (criteria?.since) query.since = new Date(criteria.since);
+  if (criteria?.before) query.before = new Date(criteria.before);
+  if (criteria?.isRead === true || criteria?.isUnread === false) query.seen = true;
+  if (criteria?.isUnread === true || criteria?.isRead === false) query.unseen = true;
+  if (Object.keys(query).length === 0) query.all = true;
+  return query;
+}
+
+/**
+ * True when a BODYSTRUCTURE node or a child is an attachment.
+ * @param {object|null|undefined} node BODYSTRUCTURE node.
+ * @returns {boolean}
+ */
+function structureHasAttachment(node) {
+  if (!node || typeof node !== 'object') return false;
+  if (String(node.disposition ?? '').toLowerCase() === 'attachment') return true;
+  const children = node.childNodes ?? node.children ?? [];
+  return Array.isArray(children) && children.some((child) => structureHasAttachment(child));
 }

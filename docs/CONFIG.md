@@ -21,7 +21,7 @@ SECRET_FABRIC_API_TOKEN=...
 
 `SECRET_FABRIC_PRINCIPAL` must be set to the same value as `AGENTMAIL_PRINCIPAL`. It is sent on every SecretFabric resolve request as the trusted `x-hermes-principal` header (never in the JSON body and never from MCP tool arguments).
 
-Compose sets `AGENTMAIL_PROFILE` (default `default` for plain `docker compose build`; provisioning sets it to the profile name). The long-running **sync worker** maps that profile to `AGENTMAIL_PRINCIPAL` and `SECRET_FABRIC_PRINCIPAL` internally. Compose does **not** put principal env vars on the worker process in a way MCP clients can override.
+Compose sets `AGENTMAIL_PROFILE` (default `default` for plain `docker compose build`; provisioning sets it to the profile name) and sets `AGENTMAIL_PRINCIPAL` and `SECRET_FABRIC_PRINCIPAL` to that same profile value. Those principals are not read from separate host variables, so an MCP client cannot supply a different principal through Compose.
 
 Hermes attaches MCP through the stdio wrapper, which injects `AGENTMAIL_PRINCIPAL` and `SECRET_FABRIC_PRINCIPAL` from inherited `HERMES_HOME` into a short-lived `docker exec` process running `node src/mcp/server.mjs` only. The MCP server still refuses to start when either principal is missing, empty, or mismatched.
 
@@ -65,7 +65,7 @@ export SECRET_FABRIC_API_TOKEN=...
 tools/provision-agentmail-profile.sh mert
 ```
 
-The script validates the profile name (`^[A-Za-z0-9][A-Za-z0-9._-]*$`), requires `SECRET_FABRIC_URL` and `SECRET_FABRIC_API_TOKEN` from the **operator environment only** (no CLI secrets, no copying credentials into the repo), and runs `docker compose --project-name agentmail-<profile> up -d --build` with `AGENTMAIL_CONTAINER_NAME`, `AGENTMAIL_VOLUME_NAME`, and `AGENTMAIL_PROFILE` set for that profile. Compose keeps `restart: always` and runs `node src/worker/sync-runtime-worker.mjs` as the container command so background sync continues while Hermes repeatedly attaches MCP via `docker exec`.
+The script validates the profile name (`^[A-Za-z0-9][A-Za-z0-9._-]*$`), requires `SECRET_FABRIC_URL` and `SECRET_FABRIC_API_TOKEN` from the **operator environment only** (no CLI secrets, no copying credentials into the repo), and runs `docker compose --project-name agentmail-<profile> up -d --build` with `AGENTMAIL_CONTAINER_NAME`, `AGENTMAIL_VOLUME_NAME`, and `AGENTMAIL_PROFILE` set for that profile. Compose keeps `restart: always` and runs `node src/mcp/server.mjs`. Background sync and IMAP IDLE are not started. The named volume remains for non-sensitive account metadata and opaque SecretFabric references.
 
 Plain `docker compose build` (without provisioning) uses the default compose names `agentmail-default` / `agentmail-default-data` for image builds only; Hermes MCP attach still requires the matching provisioned container for the active profile.
 

@@ -123,6 +123,7 @@ function buildPreviewMime(account, to, subject, bodyText, bodyHtml, replyHeaders
 export function createPreviewBinding({
   store,
   registry,
+  mailService = null,
   pendingPreviews,
   pendingApprovals,
   attachmentsApi = createAttachmentHandlers({ store, registry }),
@@ -150,7 +151,10 @@ export function createPreviewBinding({
     let replyTarget = null;
     if (sourceMessageKey) {
       try {
-        replyTarget = resolveReplyTarget({ store, accountId, sourceMessageKey, mode: replyMode });
+        if (typeof mailService?.peekMessage !== 'function') return text({ error: 'provider_unavailable' });
+        const message = await mailService.peekMessage(sourceMessageKey);
+        if (!message) return text({ error: 'source_message_not_found' });
+        replyTarget = resolveReplyTarget({ message, accountId, sourceMessageKey, mode: replyMode });
       } catch (error) {
         return text({ error: error.message });
       }

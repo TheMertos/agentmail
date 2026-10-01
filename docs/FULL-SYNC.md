@@ -24,7 +24,7 @@ This includes Inbox, Sent, Drafts, Archive, Trash, Spam, custom folders, and pro
 - **Initial sync:** enumerate all folders, then fetch every message and its complete MIME content in bounded batches.
 - **Incremental sync:** use CONDSTORE/QRESYNC/MODSEQ when available; otherwise fetch by UID ranges and compare flags.
 - **Recovery sync:** detect UIDVALIDITY changes, invalidate only the affected folder mapping, and rebuild it safely.
-- **Scheduled sync:** the long-lived worker runs per account with backoff and provider-friendly concurrency.
+- **Scheduled sync:** disabled. Interactive tools query IMAP directly.
 
 ## Local durability
 
@@ -38,7 +38,7 @@ This includes Inbox, Sent, Drafts, Archive, Trash, Spam, custom folders, and pro
 
 ## MCP behavior
 
-- MCP does not start, enqueue, or wait for mailbox sync. The worker performs IMAP sync on its own interval.
+- MCP does not start, enqueue, or wait for mailbox sync. The worker entrypoint is disabled and does not perform IMAP sync or IDLE.
 - `sync_status(accountId)` and `sync_status_all()` return folder counts, checkpoints, errors, and last successful sync from the local mirror; never credentials. They do not download mail.
 - `message_search` searches the local complete mirror and reports whether sync is still incomplete.
 - `message_read` reads the exact local message, then writes provider `\Seen` with UID STORE +FLAGS `\Seen`. If that mark fails, the read fails closed and local flags stay unchanged.
