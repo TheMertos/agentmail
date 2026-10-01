@@ -4,7 +4,7 @@ A headless, open-source MCP mail operations server for AI agents.
 
 > Early implementation. Not production-ready and not a replacement for a mail provider.
 
-AgentMail is a real Thunderbird-like mail engine without requiring a GUI. Hermes or another MCP client performs account setup, mailbox sync, search, reading, drafting, approval, sending, and verification through narrow MCP tools. A UI is optional and not part of the core product.
+AgentMail is a real desktop-class IMAP/SMTP mail engine without requiring a GUI. Hermes or another MCP client performs account setup, mailbox sync, search, reading, drafting, approval, sending, and verification through narrow MCP tools. A UI is optional and not part of the core product.
 
 ## Goal
 
@@ -27,8 +27,6 @@ Make email operations reliable instead of improvisational:
 5. **Least privilege** — separate read, draft, send, attachment, and account-management permissions.
 6. **Local-first privacy** — credentials stay in a secret manager; AI providers receive only the minimum selected content.
 7. **Open source** — self-hostable, documented, and auditable.
-
-> **Trademark notice:** Thunderbird is a Mozilla trademark. References to Thunderbird in this repository describe interoperability and UX requirements only. AgentMail is not affiliated with, sponsored by, or endorsed by Mozilla, and does not include Mozilla/Thunderbird source code.
 
 ## Planned capabilities
 
@@ -100,7 +98,7 @@ Make email operations reliable instead of improvisational:
 
 ## Development status
 
-AgentMail is a real email client first and an AI assistant second. The Thunderbird-parity requirements are tracked in [`docs/THUNDERBIRD-PARITY.md`](docs/THUNDERBIRD-PARITY.md). Background mailbox sync runs only in the long-lived worker, on its own interval and via a dedicated Inbox IDLE watcher, through that process's account registry, mailbox policy, mail service, and SecretFabric leases. MCP does not enqueue, start, or wait for sync. `sync_status` and `sync_status_all` only read local progress. The headless MCP server also supports local search/read, drafts, signatures, staged outgoing attachments, and approval-gated send. `attachment_upload` accepts base64 content only; draft, preview, and send bind filename, content type, size, and sha256, and a changed attachment invalidates the approval. Source attachments are not inherited by reply.
+AgentMail is a real email client first and an AI assistant second. The mail-client parity requirements are tracked in [`docs/MAIL-CLIENT-PARITY.md`](docs/MAIL-CLIENT-PARITY.md). Background mailbox sync runs only in the long-lived worker, on its own interval and via a dedicated Inbox IDLE watcher, through that process's account registry, mailbox policy, mail service, and SecretFabric leases. MCP does not enqueue, start, or wait for sync. `sync_status` and `sync_status_all` only read local progress. The headless MCP server also supports local search/read, drafts, signatures, staged outgoing attachments, and approval-gated send. `attachment_upload` accepts base64 content only; draft, preview, and send bind filename, content type, size, and sha256, and a changed attachment invalidates the approval. Source attachments are not inherited by reply.
 
 Resumable sync behavior is specified in [`docs/SPEC.md`](docs/SPEC.md) and summarized in [`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).
 
@@ -121,11 +119,11 @@ The deployed runtime is split into two processes:
 
 ## Read-state behavior
 
-AgentMail follows Thunderbird-style IMAP semantics while keeping passive synchronization non-mutating:
+AgentMail follows standard IMAP semantics while keeping passive synchronization non-mutating:
 
 - Passive sync, IDLE, search, flag reconciliation, attachment extraction, and local mirror reads use non-mutating fetches and do not write `\\Seen`.
 - ImapFlow uses `BODY.PEEK[]` for incoming MIME fetches, so downloading a message does not mark it read.
-- Provider `flags` events trigger a debounced incremental sync; external Thunderbird/Android/Gmail read/unread changes are copied into the local mirror without downloading the body.
+- Provider `flags` events trigger a debounced incremental sync; external desktop/mobile mail client read/unread changes are copied into the local mirror without downloading the body.
 - `message_read` is an explicit content-read operation. After the exact message is resolved, it writes provider `UID STORE +FLAGS \\Seen`; if that fails, the read fails closed and local flags are not changed.
 - `message_mark_read` explicitly writes `\\Seen` without returning the message body.
 - `message_mark_unread` explicitly writes `UID STORE -FLAGS \\Seen` and removes the flag from the local mirror.

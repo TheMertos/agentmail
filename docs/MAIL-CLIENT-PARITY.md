@@ -1,4 +1,4 @@
-# Thunderbird parity specification
+# Mail-client parity specification
 
 AgentMail must work as a real mail client first and an AI assistant second. AI features are additive and must never replace standard email operations.
 
@@ -89,7 +89,7 @@ AI must sit above the mail client engine:
 
 Hermes handles credential onboarding and supplies short-lived IMAP/SMTP connection leases. AgentMail owns mail synchronization, local cache, MIME processing, UI, drafts, and provider operations. No secret is persisted by AgentMail.
 
-## Thunderbird-like acceptance test
+## Mail-client acceptance test
 
 The first production-capable release is not complete until a user can:
 
