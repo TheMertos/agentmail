@@ -106,6 +106,29 @@ See [`docs/PRODUCT.md`](docs/PRODUCT.md) for scope, threat model, and acceptance
 
 Credentials are brokered through the existing SecretFabric installation. AgentMail can create a one-time claim, let the human enter the sensitive values, and request only short-lived, purpose- and field-scoped in-memory leases for IMAP/SMTP operations. It never exposes credentials to the AI model, chat, logs, or normal application storage. HTML signatures are separate account-scoped profiles with plain-text fallbacks and preview-bound approval. See [`docs/SECRETS.md`](docs/SECRETS.md) and [`docs/SIGNATURES.md`](docs/SIGNATURES.md).
 
+## Runtime and SecretFabric flow
+
+The deployed runtime is split into two processes:
+
+- The long-lived Docker worker owns background IMAP synchronization and the Inbox IDLE watchers.
+- The short-lived stdio MCP server is started with `docker exec` by the Hermes MCP wrapper for interactive tool calls.
+- The wrapper derives `AGENTMAIL_PRINCIPAL` from the trusted `HERMES_HOME`; callers cannot select a different principal through tool arguments.
+- For every IMAP or SMTP operation, the worker/MCP runtime asks SecretFabric for a short-lived lease using the account's opaque `secretRef`, a purpose, and field paths such as `incoming.username` and `incoming.password`.
+- SecretFabric returns credentials only in process memory. The lease is released after the operation and private fields are destroyed.
+- The provider connection is then created from the lease and closed after the operation. AgentMail stores account metadata and message MIME, never the credential values.
+
+## Read-state behavior
+
+AgentMail follows Thunderbird-style IMAP semantics while keeping passive synchronization non-mutating:
+
+- Passive sync, IDLE, search, flag reconciliation, attachment extraction, and local mirror reads use non-mutating fetches and do not write `\\Seen`.
+- ImapFlow uses `BODY.PEEK[]` for incoming MIME fetches, so downloading a message does not mark it read.
+- Provider `flags` events trigger a debounced incremental sync; external Thunderbird/Android/Gmail read/unread changes are copied into the local mirror without downloading the body.
+- `message_read` is an explicit content-read operation. After the exact message is resolved, it writes provider `UID STORE +FLAGS \\Seen`; if that fails, the read fails closed and local flags are not changed.
+- `message_mark_read` explicitly writes `\\Seen` without returning the message body.
+- `message_mark_unread` explicitly writes `UID STORE -FLAGS \\Seen` and removes the flag from the local mirror.
+- All read-state writes require exact account, mailbox, UID, and UIDVALIDITY identity checks.
+
 ## MCP security contract
 
 The Hermes MCP wrapper derives the runtime principal only from inherited `HERMES_HOME` and injects it as `AGENTMAIL_PRINCIPAL`. MCP tool arguments cannot choose or impersonate that principal. Host paths are rejected by `attachment_upload` and are never read; the tool returns metadata only (id, filename, content type, size, sha256). Approval is required before `message_send`. mail_account_register does not overwrite an existing account, `secretRef`, or connection; there is no silent migration of those fields.
