@@ -97,7 +97,7 @@ export class MailService {
    */
   async markRead(messageKey, store) {
     return changeSeenFlag(this, messageKey, store, {
-      purpose: 'imap-mark-read',
+      purpose: 'imap-sync',
       operation: 'imap-mark-read',
       write: (provider, mailbox, message) => provider.markRead(mailbox, message.uid, message.uidValidity),
       flagsFor: flagsWithSeen
@@ -112,7 +112,7 @@ export class MailService {
    */
   async markUnread(messageKey, store) {
     return changeSeenFlag(this, messageKey, store, {
-      purpose: 'imap-mark-unread',
+      purpose: 'imap-sync',
       operation: 'imap-mark-unread',
       write: (provider, mailbox, message) => provider.markUnread(mailbox, message.uid, message.uidValidity),
       flagsFor: flagsWithoutSeen
