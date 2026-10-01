@@ -28,6 +28,8 @@ Make email operations reliable instead of improvisational:
 6. **Local-first privacy** — credentials stay in a secret manager; AI providers receive only the minimum selected content.
 7. **Open source** — self-hostable, documented, and auditable.
 
+> **Trademark notice:** Thunderbird is a Mozilla trademark. References to Thunderbird in this repository describe interoperability and UX requirements only. AgentMail is not affiliated with, sponsored by, or endorsed by Mozilla, and does not include Mozilla/Thunderbird source code.
+
 ## Planned capabilities
 
 ### Mail
