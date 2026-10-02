@@ -15,12 +15,13 @@ import { createMessageReadHandler, messageReadDescription, messageReadInputSchem
 import { createMessageSearchHandler, messageSearchDescription, messageSearchInputSchema } from './message-search-tools.mjs';
 import { createPreviewBinding } from './preview-binding.mjs';
 import { createMessageSendHandler } from './send-preflight.mjs';
+import { createCredentialCacheHandlers } from './credential-cache-tools.mjs';
 import { createSyncStatusHandlers } from './sync-status-tools.mjs';
 import { redactSensitiveText, redactToolError } from '../security/redact.mjs';
 import { createMailRuntime } from '../runtime/mail-runtime.mjs';
 
 const config = assertNativeService(process.env);
-const { store, registry, mailService } = createMailRuntime(config);
+const { store, registry, mailService, credentialSync } = createMailRuntime(config);
 const { syncStatus, syncStatusAll } = createSyncStatusHandlers({ registry });
 const messageSearch = createMessageSearchHandler({ registry, mailService });
 const messageRead = createMessageReadHandler({ registry, mailService });
@@ -43,6 +44,7 @@ const previewBinding = createPreviewBinding({
   attachmentsApi
 });
 const messageSend = createMessageSendHandler({ pendingApprovals, registry, store });
+const { credentialCacheStatus, credentialCacheReconcile } = createCredentialCacheHandlers({ registry, credentialSync });
 
 const text = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 
@@ -188,6 +190,16 @@ server.registerTool('mailbox_list', {
     return text({ error: error.message === 'access_denied' ? 'access_denied' : error.message });
   }
 });
+server.registerTool('credential_cache_status', {
+  description: 'Return encrypted credential-cache status for one owned account. Never returns secrets, ciphertext, or lease material.',
+  inputSchema: { accountId: z.string().min(1) }
+}, async ({ accountId }) => text(await credentialCacheStatus({ accountId })));
+
+server.registerTool('credential_cache_reconcile', {
+  description: 'Refresh the service-owned encrypted credential cache from SecretFabric for one owned account. Returns status and version metadata only.',
+  inputSchema: { accountId: z.string().min(1) }
+}, async ({ accountId }) => text(await credentialCacheReconcile({ accountId })));
+
 server.registerTool('sync_status', {
   description: 'Report that background sync and IMAP IDLE are disabled. Interactive tools read IMAP directly. Does not read local checkpoints or start a sync. Never returns credentials.',
   inputSchema: { accountId: z.string().min(1) }
@@ -254,7 +266,7 @@ server.registerTool('signature_set_default', {
 });
 
 server.registerTool('message_preview', {
-  description: 'Render the exact outgoing text/HTML from new content, the selected or default signature, and an optional quoted source. Returns a short-lived previewId bound to that text, HTML, signature, quote, attachments, account, and principal. Source attachments are not inherited by reply. Optional staged attachment ids are returned as exact filename, content type, size, and sha256 metadata; omitted ids yield an empty attachment list. send_approval_create retrieves this stored preview server-side and does not require copied text, HTML, MIME, or attachment metadata.',
+  description: 'Render the exact outgoing text/HTML from new content, the selected or default signature, the AI footer exactly once, and an optional quoted source. A sourceMessageKey reply quotes the complete source text and HTML instead of a caller snippet. Returns a short-lived previewId bound to that text, HTML, signature, quote, attachments, account, and principal. Source attachments are not inherited by reply. Optional staged attachment ids are returned as exact filename, content type, size, and sha256 metadata; omitted ids yield an empty attachment list. send_approval_create retrieves this stored preview server-side and does not require copied text, HTML, MIME, or attachment metadata.',
   inputSchema: {
     accountId: z.string().min(1),
     newText: z.string(),

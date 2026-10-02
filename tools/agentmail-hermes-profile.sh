@@ -41,14 +41,14 @@ validate_agentmail_profile_name() {
   [[ "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
 }
 
-# Fill empty SECRET_FABRIC_URL and SECRET_FABRIC_API_TOKEN from the profile env file.
+# Fill empty SECRET_FABRIC_URL, SECRET_FABRIC_API_TOKEN, and CREDENTIAL_CACHE_KEY from the profile env file.
 # Non-empty inherited values are kept. Secret values are never printed.
 # @param $1 profile name
 # @param $2 config directory name under ~/.config
 load_missing_secret_fabric_env() {
   local profile="${1:?profile required}"
   local app="${2:?app required}"
-  if [[ -n "${SECRET_FABRIC_URL:-}" && -n "${SECRET_FABRIC_API_TOKEN:-}" ]]; then
+  if [[ -n "${SECRET_FABRIC_URL:-}" && -n "${SECRET_FABRIC_API_TOKEN:-}" && -n "${CREDENTIAL_CACHE_KEY:-}" ]]; then
     return 0
   fi
   if [[ -z "${HOME:-}" && -z "${XDG_CONFIG_HOME:-}" ]]; then
@@ -78,7 +78,7 @@ load_missing_secret_fabric_env() {
       value="${value:1:${#value}-2}"
     fi
     case "${key}" in
-      SECRET_FABRIC_URL|SECRET_FABRIC_API_TOKEN)
+      SECRET_FABRIC_URL|SECRET_FABRIC_API_TOKEN|CREDENTIAL_CACHE_KEY)
         if [[ -z "${!key:-}" && -n "${value}" ]]; then
           printf -v "${key}" '%s' "${value}"
           export "${key}"

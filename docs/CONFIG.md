@@ -15,7 +15,12 @@ AGENTMAIL_PRINCIPAL=<derived at MCP attach time>
 SECRET_FABRIC_PRINCIPAL=<same as AGENTMAIL_PRINCIPAL>
 SECRET_FABRIC_URL=https://secretfabric.example
 SECRET_FABRIC_API_TOKEN=...
+CREDENTIAL_CACHE_KEY=<operator-supplied 64-character hexadecimal secret>
 ```
+
+`CREDENTIAL_CACHE_KEY` is a required external runtime secret. It is 64 hexadecimal characters (32 bytes). Startup fails when it is missing or malformed. The process uses it only to encrypt and decrypt the service-owned credential cache. It is not written to SQLite, accepted in MCP inputs, returned in MCP results, written to logs, or stored in this repository. Provider access always reconciles SecretFabric into that cache and decrypts only inside the service. There is no direct SecretFabric resolver fallback.
+
+The native launcher does not generate this value. The systemd user unit loads it when the operator places it in `~/.config/agentmail/<profile>.env`, because that unit uses `EnvironmentFile`. The Hermes stdio wrapper fills only empty `SECRET_FABRIC_URL` and `SECRET_FABRIC_API_TOKEN` from that file. It does not import `CREDENTIAL_CACHE_KEY`. An MCP process needs the variable already present in its environment.
 
 `AGENTMAIL_PRINCIPAL` identifies the single authorized operator for this AgentMail instance. The MCP server refuses to start without it. Mail accounts, messages, drafts, signatures, sync jobs, and send operations are scoped to that principal; MCP tool arguments cannot override or impersonate it.
 

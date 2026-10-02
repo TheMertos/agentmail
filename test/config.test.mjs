@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig, loadWorkerConfig } from '../src/config.mjs';
 
+const CACHE_KEY = 'ab'.repeat(32);
+
 const BASE_ENV = {
   AGENTMAIL_DB_PATH: '/data/agentmail.db',
   AGENTMAIL_SYNC_INTERVAL_SECONDS: '300',
@@ -10,7 +12,8 @@ const BASE_ENV = {
   AGENTMAIL_PRINCIPAL: 'mert',
   SECRET_FABRIC_PRINCIPAL: 'mert',
   SECRET_FABRIC_URL: 'http://127.0.0.1:3000',
-  SECRET_FABRIC_API_TOKEN: 'tok'
+  SECRET_FABRIC_API_TOKEN: 'tok',
+  CREDENTIAL_CACHE_KEY: CACHE_KEY
 };
 
 test('runtime configuration is mandatory', () => {
@@ -46,8 +49,12 @@ test('runtime configuration validates values', () => {
     secretFabricUrl: 'http://127.0.0.1:3000',
     secretFabricApiToken: 'tok',
     serviceMode: 'native',
+    credentialCacheKey: CACHE_KEY,
     attachmentRoots: []
   });
+  const { CREDENTIAL_CACHE_KEY: _key, ...withoutKey } = BASE_ENV;
+  assert.throws(() => loadConfig(withoutKey), /CREDENTIAL_CACHE_KEY/);
+  assert.throws(() => loadConfig({ ...BASE_ENV, CREDENTIAL_CACHE_KEY: 'short' }), /CREDENTIAL_CACHE_KEY/);
 });
 
 test('worker configuration requires AGENTMAIL_PROFILE and maps principal', () => {

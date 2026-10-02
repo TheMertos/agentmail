@@ -93,8 +93,8 @@ The deployed runtime is one MCP server process:
 
 - The native host service and the Hermes wrapper run `node src/mcp/server.mjs`. Background IMAP synchronization and Inbox IDLE are disabled.
 - Hermes starts interactive tool calls against that server. The wrapper derives `AGENTMAIL_PRINCIPAL` from the trusted `HERMES_HOME`; callers cannot select a different principal through tool arguments.
-- For every IMAP or SMTP operation, the MCP runtime asks SecretFabric for a short-lived lease using the account's opaque `secretRef`, a purpose, and field paths such as `incoming.username` and `incoming.password`.
-- SecretFabric returns credentials only in process memory. The lease is released after the operation and private fields are destroyed.
+- For every IMAP or SMTP operation, the service reconciles the account's opaque `secretRef` from SecretFabric into the service-owned encrypted credential cache, then decrypts the lease only inside the process.
+- `CREDENTIAL_CACHE_KEY` is a required external runtime secret. It is not stored in SQLite, MCP inputs or results, logs, or source. There is no direct SecretFabric resolver fallback.
 - The provider connection is created from the lease and closed after the operation. AgentMail stores account metadata and opaque secret references, not credential values and not an interactive message mirror.
 
 ## Read-state behavior

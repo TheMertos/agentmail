@@ -11,7 +11,8 @@ const REQUIRED = [
   'AGENTMAIL_PRINCIPAL',
   'SECRET_FABRIC_PRINCIPAL',
   'SECRET_FABRIC_URL',
-  'SECRET_FABRIC_API_TOKEN'
+  'SECRET_FABRIC_API_TOKEN',
+  'CREDENTIAL_CACHE_KEY'
 ];
 
 /**
@@ -36,6 +37,7 @@ export function loadConfig(env = process.env) {
   if (serviceMode !== 'native') {
     throw new Error('AGENTMAIL_SERVICE_MODE must be native');
   }
+  const credentialCacheKey = readCredentialCacheKey(env);
   return {
     dbPath: env.AGENTMAIL_DB_PATH,
     syncIntervalSeconds: interval,
@@ -46,8 +48,22 @@ export function loadConfig(env = process.env) {
     secretFabricUrl: env.SECRET_FABRIC_URL,
     secretFabricApiToken: env.SECRET_FABRIC_API_TOKEN,
     serviceMode,
+    credentialCacheKey,
     attachmentRoots: parseAttachmentRoots(env.AGENTMAIL_ATTACHMENT_ROOTS)
   };
+}
+
+/**
+ * Require the external 32-byte hex cache key. It is not stored or logged.
+ * @param {Record<string, string|undefined>} env Process environment.
+ * @returns {string}
+ */
+function readCredentialCacheKey(env) {
+  const value = String(env.CREDENTIAL_CACHE_KEY ?? '').trim();
+  if (!/^[0-9a-fA-F]{64}$/.test(value)) {
+    throw new Error('CREDENTIAL_CACHE_KEY must be a 32-byte hexadecimal key');
+  }
+  return value;
 }
 
 /**

@@ -23,6 +23,7 @@ const BASE_ENV = {
   SECRET_FABRIC_PRINCIPAL: 'mert',
   SECRET_FABRIC_URL: 'http://127.0.0.1:3000',
   SECRET_FABRIC_API_TOKEN: 'tok',
+  CREDENTIAL_CACHE_KEY: 'ab'.repeat(32),
   AGENTMAIL_SERVICE_MODE: 'native',
   AGENTMAIL_ATTACHMENT_ROOTS: '/var/lib/agentmail/mert/outgoing'
 };

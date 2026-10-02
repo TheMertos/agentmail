@@ -42,3 +42,5 @@ hermes mcp add agentmail -- /home/mert/agent-mail-client/tools/hermes-agentmail-
 ```
 
 When `SECRET_FABRIC_URL` or `SECRET_FABRIC_API_TOKEN` is empty, the wrapper fills only the empty values from `~/.config/agentmail/<profile>.env` (`$XDG_CONFIG_HOME/agentmail/<profile>.env` when `XDG_CONFIG_HOME` is set). Non-empty inherited values stay in place. The process still exits if either value is missing after that load, and it never prints secret values.
+
+`CREDENTIAL_CACHE_KEY` is also required. It is an operator-supplied 64-character hexadecimal secret and must not be generated, printed, or committed. The systemd user unit loads the whole profile env file, so place the variable there for `agentmail@<profile>.service`. The Hermes wrapper does not copy `CREDENTIAL_CACHE_KEY` from that file. Export it in the environment that starts the MCP process.

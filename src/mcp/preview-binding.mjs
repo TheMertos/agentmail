@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { createApproval } from '../core/approval.mjs';
 import { composeOutgoingMessage } from '../core/compose-message.mjs';
 import { createAttachmentHandlers, normalizeSendPayload, resolveReplyAttachments } from './attachment-tools.mjs';
 import { resolveReplyTarget } from '../mail/reply-target.mjs';
+
+const { simpleParser } = createRequire(import.meta.url)('mailparser');
 
 /**
  * Wrap a JSON tool result.
@@ -114,6 +117,48 @@ function buildPreviewMime(account, to, subject, bodyText, bodyHtml, replyHeaders
 }
 
 /**
+ * Reduce parsed source HTML to embeddable body content.
+ * Document wrappers, head metadata, and style or script blocks are removed.
+ * Nested quotes inside the body stay intact.
+ * @param {string} html Parsed source HTML document or fragment.
+ * @returns {string} Quote fragment.
+ */
+function normalizeSourceQuoteHtml(html) {
+  let result = html
+    .replace(/<!DOCTYPE[^>]*>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, '')
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+    .replace(/<\/?(?:meta|link|title|base)\b[^>]*>/gi, '');
+  const body = /<body\b[^>]*>([\s\S]*?)<\/body>/i.exec(result);
+  if (body) result = body[1];
+  return result.replace(/<\/?(?:html|body|head)\b[^>]*>/gi, '').trim();
+}
+
+/**
+ * Read the complete plain and HTML bodies from a peeked source message.
+ * Caller snippets are not accepted as a substitute.
+ * @param {object} message Peeked source message.
+ * @returns {Promise<{ quoteText: string, quoteHtml?: string }>} Full source quote parts.
+ */
+async function completeSourceQuote(message) {
+  const raw = message?.raw;
+  if ((typeof raw !== 'string' && !Buffer.isBuffer(raw)) || raw.length === 0) {
+    throw new Error('source_quote_unavailable');
+  }
+  let parsed;
+  try {
+    parsed = await simpleParser(raw, { skipHtmlToText: true, skipTextToHtml: true });
+  } catch {
+    throw new Error('source_quote_unavailable');
+  }
+  const quoteText = typeof parsed.text === 'string' ? parsed.text.replace(/\r\n/g, '\n').replace(/\s+$/, '') : '';
+  const quoteHtml = typeof parsed.html === 'string' ? normalizeSourceQuoteHtml(parsed.html) : undefined;
+  if (!quoteText && !quoteHtml) throw new Error('source_quote_unavailable');
+  return { quoteText, quoteHtml };
+}
+
+/**
  * Build message_preview and send_approval_create handlers bound to one preview map.
  * Approval creation accepts only an unexpired preview for the same account and principal,
  * and only when text, HTML, attachments, and MIME match that preview exactly.
@@ -149,17 +194,29 @@ export function createPreviewBinding({
       return text({ error: error.message });
     }
     let replyTarget = null;
+    let resolvedQuoteText = quoteText;
+    let resolvedQuoteHtml = quoteHtml;
     if (sourceMessageKey) {
       try {
         if (typeof mailService?.peekMessage !== 'function') return text({ error: 'provider_unavailable' });
         const message = await mailService.peekMessage(sourceMessageKey);
         if (!message) return text({ error: 'source_message_not_found' });
         replyTarget = resolveReplyTarget({ message, accountId, sourceMessageKey, mode: replyMode });
+        const sourceQuote = await completeSourceQuote(message);
+        resolvedQuoteText = sourceQuote.quoteText;
+        resolvedQuoteHtml = sourceQuote.quoteHtml;
       } catch (error) {
         return text({ error: error.message });
       }
     }
-    const composed = composeOutgoingMessage({ newText, newHtml, signature, quoteText, quoteHtml, quoteDepth });
+    const composed = composeOutgoingMessage({
+      newText,
+      newHtml,
+      signature,
+      quoteText: resolvedQuoteText,
+      quoteHtml: resolvedQuoteHtml,
+      quoteDepth
+    });
     let replyAttachments;
     try {
       replyAttachments = resolveReplyAttachments(
@@ -177,8 +234,8 @@ export function createPreviewBinding({
       text: composed.text,
       html: composed.html,
       signature: signature ? { id: signature.id, name: signature.name, version: signature.version } : null,
-      quoteText: quoteText ?? '',
-      quoteHtml: quoteHtml ?? '',
+      quoteText: resolvedQuoteText ?? '',
+      quoteHtml: resolvedQuoteHtml ?? '',
       sourceMessageKey: sourceMessageKey ?? null,
       replyHeaders: replyTarget ? {
         inReplyTo: replyTarget.headers.inReplyTo,

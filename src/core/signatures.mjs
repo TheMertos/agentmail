@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+
+const AI_FOOTER_HTML_PATH = '/home/mert/mail/sent_by_ai.html';
 const ALLOWED_TAGS = new Set(['a', 'br', 'div', 'em', 'i', 'li', 'ol', 'p', 'span', 'strong', 'u', 'ul', 'table', 'tbody', 'thead', 'tfoot', 'tr', 'td', 'th']);
 const ALLOWED_ATTRIBUTES = new Set(['href', 'title', 'target', 'rel', 'class', 'alt', 'role', 'cellpadding', 'cellspacing', 'cellpadding', 'border', 'width', 'height', 'colspan', 'rowspan', 'valign', 'align']);
 const SAFE_STYLE_PROPERTIES = new Set(['background', 'background-color', 'border', 'border-left', 'border-right', 'border-top', 'border-bottom', 'border-collapse', 'border-radius', 'box-shadow', 'color', 'display', 'font-family', 'font-size', 'font-style', 'font-weight', 'letter-spacing', 'line-height', 'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'max-width', 'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'text-decoration', 'vertical-align', 'width', 'height']);
@@ -47,4 +50,35 @@ export function sanitizeSignatureHtml(input) {
 export function composeSignatureParts({ html, text }) {
   if (typeof html !== 'string' || typeof text !== 'string') throw new TypeError('signature requires HTML and plain-text parts');
   return { html: sanitizeSignatureHtml(html), text: text.trim() };
+}
+
+/**
+ * Plain-text equivalent of the fixed AI footer markup.
+ * @param {string} html Footer HTML from the fixed file.
+ * @returns {string} Visible footer text.
+ */
+function plainTextFromFooterHtml(html) {
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+/**
+ * Load the fixed sent_by_ai HTML footer and its plain-text equivalent.
+ * The path is constant and is not taken from tool arguments.
+ * @returns {{ html: string, text: string }} Sanitized HTML and plain text.
+ */
+export function loadAiFooter() {
+  const source = readFileSync(AI_FOOTER_HTML_PATH, 'utf8');
+  return {
+    html: sanitizeSignatureHtml(source),
+    text: plainTextFromFooterHtml(source)
+  };
 }

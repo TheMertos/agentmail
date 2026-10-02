@@ -1,4 +1,4 @@
-import { composeSignatureParts } from './signatures.mjs';
+import { composeSignatureParts, loadAiFooter } from './signatures.mjs';
 
 const CANONICAL_QUOTE = '<blockquote class="gmail_quote" style="border-left:1px #ccc solid;padding-left:1ex;margin-left:0">';
 
@@ -38,14 +38,22 @@ function normalizeQuoteText(value, depth) {
   }).join('\n');
 }
 
+/**
+ * Compose new body, one account signature, the AI footer once, then the quote.
+ * @param {{ newText: string, newHtml: string, signature?: { html: string, text: string }, quoteText?: string, quoteHtml?: string, quoteDepth?: number }} parts Outgoing parts.
+ * @returns {{ text: string, html: string }} Plain and HTML alternatives.
+ */
 export function composeOutgoingMessage({ newText, newHtml, signature, quoteText, quoteHtml, quoteDepth }) {
   if (!newText || !newHtml) throw new TypeError('newText and newHtml are required');
   const sig = signature ? composeSignatureParts({ html: signature.html, text: signature.text }) : null;
+  const footer = loadAiFooter();
 
   const textParts = [newText];
   if (sig) textParts.push(sig.text);
+  textParts.push(footer.text);
   const htmlParts = [newHtml];
   if (sig) htmlParts.push(sig.html);
+  htmlParts.push(footer.html);
 
   if (!quoteText && !quoteHtml) {
     return { text: textParts.join('\n\n'), html: htmlParts.join('') };

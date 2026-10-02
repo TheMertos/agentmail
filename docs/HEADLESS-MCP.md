@@ -86,7 +86,7 @@ The stdio wrapper `tools/hermes-agentmail-mcp.sh` derives the principal only fro
 
 ## Credential boundary
 
-Hermes performs onboarding. Each interactive IMAP or SMTP operation resolves a SecretFabric lease in-process from the account's opaque `secretRef` and the runtime principal (`x-hermes-principal` from configuration, never from MCP arguments). AgentMail stores only opaque account references and non-sensitive connection metadata. MCP tool results never include passwords, tokens, or lease material.
+Hermes performs onboarding. Each interactive IMAP or SMTP operation reconciles SecretFabric into the service-owned encrypted credential cache, then decrypts only inside the service. The required `CREDENTIAL_CACHE_KEY` comes from the process environment and is never stored in SQLite, MCP inputs or results, logs, or source. The runtime principal is `x-hermes-principal` from configuration, never from MCP arguments. AgentMail stores opaque account references, non-sensitive connection metadata, and ciphertext. MCP tool results never include passwords, tokens, ciphertext, or lease material.
 
 The MCP server must reject lease material arriving from an untrusted browser or from arbitrary tool arguments. The trusted adapter is configured outside the MCP tool surface.
 

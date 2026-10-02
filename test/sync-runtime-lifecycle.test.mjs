@@ -162,7 +162,8 @@ test('disabled worker does not sync through SecretFabric or IMAP', async () => {
     principal: TEST_PRINCIPAL,
     secretFabricPrincipal: TEST_PRINCIPAL,
     secretFabricUrl: 'http://secretfabric.test',
-    secretFabricApiToken: 'test-token'
+    secretFabricApiToken: 'test-token',
+    credentialCacheKey: 'ab'.repeat(32)
   };
   const worker = createMailRuntime(config, { fetchImpl, providerFactory });
   let stop = () => {};
