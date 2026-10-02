@@ -1,4 +1,5 @@
 import { ImapOperationTimeout } from './imap-provider.mjs';
+import { isSelectableMailbox } from './mailbox-sync.mjs';
 import { normalizeMessageSearch, pageMessageHits } from './message-search.mjs';
 import { sendAndSaveSent } from './send-service.mjs';
 
@@ -61,6 +62,7 @@ export class MailService {
 
   /**
    * Search the live IMAP server. Provider errors propagate and are never filled from a local mirror.
+   * Each mailbox returns its complete SEARCH set. The page and cursor are taken from that merged set.
    * @param {object} criteria Search criteria.
    * @returns {Promise<object>} Search page.
    */
@@ -71,7 +73,7 @@ export class MailService {
       try {
         if (typeof provider.searchSummaries !== 'function') throw new Error('provider_unavailable');
         const hits = [];
-        for (const mailbox of remoteSearchTargets(normalized.mailboxIds)) {
+        for (const mailbox of await remoteSearchTargets(provider, normalized)) {
           const rows = await provider.searchSummaries(mailbox, normalized);
           for (const row of rows) {
             if (!flagsMatch(row.flags, normalized)) continue;
@@ -303,13 +305,44 @@ function shapeMessage(identity, fetched, flags) {
 }
 
 /**
- * Folders for one live search. An omitted list is INBOX only and never discovers other folders.
- * @param {string[]} mailboxIds Normalized mailbox ids or paths.
+ * Folders for one live search. Explicit mailbox ids win and do not list the account.
+ * allMailboxes lists selectable folders. Otherwise only INBOX is searched.
+ * @param {{ listMailboxes?: Function }} provider IMAP provider.
+ * @param {object} normalized Search criteria.
+ * @returns {Promise<{ id: string, path: string }[]>} Search targets.
+ */
+async function remoteSearchTargets(provider, normalized) {
+  if (normalized.mailboxIds.length > 0) return mailboxTargets(normalized.mailboxIds);
+  if (normalized.allMailboxes === true) return mailboxTargets(await selectableMailboxPaths(provider));
+  return mailboxTargets([DEFAULT_REMOTE_MAILBOX]);
+}
+
+/**
+ * Map mailbox paths to search targets.
+ * @param {string[]} mailboxIds Mailbox paths.
  * @returns {{ id: string, path: string }[]} Search targets.
  */
-function remoteSearchTargets(mailboxIds) {
-  const ids = mailboxIds?.length ? mailboxIds : [DEFAULT_REMOTE_MAILBOX];
-  return ids.map((id) => ({ id, path: id }));
+function mailboxTargets(mailboxIds) {
+  return mailboxIds.map((id) => ({ id, path: id }));
+}
+
+/**
+ * Selectable mailbox paths from an explicit folder list.
+ * @param {{ listMailboxes?: Function }} provider IMAP provider.
+ * @returns {Promise<string[]>} Sorted selectable paths. \\Noselect folders are omitted.
+ */
+async function selectableMailboxPaths(provider) {
+  if (typeof provider.listMailboxes !== 'function') throw new Error('provider_unavailable');
+  const listed = await provider.listMailboxes({ includeStatus: false });
+  const paths = [];
+  for (const mailbox of Array.isArray(listed) ? listed : []) {
+    if (!isSelectableMailbox(mailbox)) continue;
+    const path = typeof mailbox?.path === 'string' && mailbox.path.length > 0
+      ? mailbox.path
+      : (typeof mailbox?.id === 'string' ? mailbox.id : '');
+    if (path) paths.push(path);
+  }
+  return [...new Set(paths)].sort();
 }
 
 /**

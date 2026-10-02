@@ -460,12 +460,13 @@ export class ImapProvider {
   }
 
   /**
-   * Search one mailbox on the live server and return summaries. Does not STORE and does not persist MIME.
-   * After SEARCH, FETCH loads only the UID window for the requested limit and sort order.
-   * FETCH uses ENVELOPE, FLAGS, and BODYSTRUCTURE, which do not set \\Seen.
+   * Search one mailbox on the live server and return every matching summary.
+   * Does not STORE and does not persist MIME. SEARCH is not truncated to limit.
+   * The caller pages the complete result by date or UID. FETCH uses ENVELOPE, FLAGS,
+   * and BODYSTRUCTURE, which do not set \\Seen.
    * @param {{ path: string, id?: string }} mailbox Mailbox to search.
-   * @param {object} criteria Normalized search criteria.
-   * @returns {Promise<object[]>} Matching summaries for this mailbox.
+   * @param {object} criteria Normalized search criteria. query is IMAP TEXT.
+   * @returns {Promise<object[]>} Every matching summary for this mailbox.
    */
   async searchSummaries(mailbox, criteria) {
     if (!mailbox?.path) throw new Error('invalid_mailbox');
@@ -484,7 +485,7 @@ export class ImapProvider {
         this.client.search(imapSearchQuery(criteria), { uid: true }),
         'search'
       );
-      const uids = selectSearchUids(found, criteria);
+      const uids = orderedSearchUids(found);
       if (uids.length === 0) return [];
       const hits = [];
       const size = 100;
@@ -608,42 +609,21 @@ export class ImapProvider {
   }
 }
 
-/** Page size used when a live search omits a limit. Matches message search. */
-const SEARCH_UID_LIMIT_DEFAULT = 50;
-
-/** Upper bound for one live search FETCH window. Matches message search. */
-const SEARCH_UID_LIMIT_MAX = 200;
-
 /**
- * Keep the UID window requested by sort order so FETCH does not load every SEARCH hit.
- * Descending order keeps the newest (highest) UIDs. Ascending order keeps the oldest (lowest) UIDs.
+ * Keep every positive SEARCH uid, in ascending order, so a later page can reach older and newer matches.
  * @param {unknown} found UIDs returned by IMAP SEARCH.
- * @param {object} criteria Normalized search criteria. Uses limit and sortOrder.
- * @returns {number[]} UIDs to FETCH, at most the requested limit.
+ * @returns {number[]} Unique UIDs to FETCH. The page limit is not applied here.
  */
-function selectSearchUids(found, criteria) {
+function orderedSearchUids(found) {
   const uids = Array.isArray(found)
     ? found.map((uid) => Number(uid)).filter((uid) => Number.isInteger(uid) && uid > 0)
     : [];
-  if (uids.length === 0) return [];
-  const limit = searchUidLimit(criteria?.limit);
-  const ordered = [...uids].sort((left, right) => left - right);
-  if (criteria?.sortOrder === 'asc') return ordered.slice(0, limit);
-  return ordered.slice(-limit);
+  return [...new Set(uids)].sort((left, right) => left - right);
 }
 
 /**
- * Clamp the requested page size used to bound a search FETCH.
- * @param {unknown} limit Requested limit.
- * @returns {number} Positive limit from 1 through 200, or the default of 50.
- */
-function searchUidLimit(limit) {
-  if (!Number.isInteger(limit) || limit < 1) return SEARCH_UID_LIMIT_DEFAULT;
-  return Math.min(limit, SEARCH_UID_LIMIT_MAX);
-}
-
-/**
- * Build an ImapFlow SEARCH query. An empty filter searches all messages.
+ * Build an ImapFlow SEARCH query. query is IMAP TEXT, which searches headers and body.
+ * An empty filter searches all messages.
  * @param {object} criteria Normalized criteria.
  * @returns {object} ImapFlow search query.
  */
@@ -653,13 +633,25 @@ function imapSearchQuery(criteria) {
   if (criteria?.from) query.from = criteria.from;
   if (criteria?.to) query.to = criteria.to;
   if (criteria?.cc) query.cc = criteria.cc;
-  if (criteria?.query) query.text = criteria.query;
+  const content = imapTextQuery(criteria?.query);
+  if (content) query.text = content;
   if (criteria?.since) query.since = new Date(criteria.since);
   if (criteria?.before) query.before = new Date(criteria.before);
   if (criteria?.isRead === true || criteria?.isUnread === false) query.seen = true;
   if (criteria?.isUnread === true || criteria?.isRead === false) query.unseen = true;
   if (Object.keys(query).length === 0) query.all = true;
   return query;
+}
+
+/**
+ * Phrase searched with IMAP TEXT. Blank text is not a criterion.
+ * @param {unknown} query Caller query, already trimmed by normalizeMessageSearch when it came from the tool.
+ * @returns {string|null} TEXT value, or null when there is nothing to search.
+ */
+function imapTextQuery(query) {
+  if (typeof query !== 'string') return null;
+  const text = query.trim();
+  return text.length > 0 ? text : null;
 }
 
 /**

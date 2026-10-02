@@ -58,6 +58,7 @@ export function normalizeMessageSearch(input, options = {}) {
     to: optionalText(input.to),
     cc: optionalText(input.cc),
     mailboxIds: normalizeMailboxes(input.mailboxId, input.mailboxIds),
+    allMailboxes: optionalBoolean(input.allMailboxes) === true,
     since,
     before,
     isRead,
@@ -453,6 +454,7 @@ function filterFingerprint(normalized) {
     to: normalized.to,
     cc: normalized.cc,
     mailboxIds: normalized.mailboxIds,
+    allMailboxes: normalized.allMailboxes === true,
     since: normalized.since,
     before: normalized.before,
     isRead: normalized.isRead,
@@ -506,10 +508,6 @@ function decodeCursor(token, normalized) {
   return payload;
 }
 
-/**
- * @param {object} normalized
- * @returns {object}
- */
 /**
  * Page provider hits with the same cursor and sort rules as the SQL search.
  * @param {object[]} hits Remote message summaries with key, accountId, mailboxId, uid, uidValidity, internalDate, flags, and envelope.
@@ -579,6 +577,11 @@ function compareSortValue(left, right) {
   return 0;
 }
 
+/**
+ * Public filter echo for one normalized search.
+ * @param {object} normalized Output of normalizeMessageSearch.
+ * @returns {object} Filters that were applied, including limit and sort.
+ */
 function appliedFilters(normalized) {
   return {
     query: normalized.query,
@@ -587,6 +590,7 @@ function appliedFilters(normalized) {
     to: normalized.to,
     cc: normalized.cc,
     mailboxIds: [...normalized.mailboxIds],
+    allMailboxes: normalized.allMailboxes === true,
     since: normalized.since,
     before: normalized.before,
     isRead: normalized.isRead,

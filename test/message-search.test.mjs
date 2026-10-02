@@ -380,6 +380,9 @@ test('search stays inside the requested account and the caller principal', async
 test('MCP message_search schema keeps the original arguments and describes the envelope', () => {
   assert.match(messageSearchDescription, /nextCursor/);
   assert.match(messageSearchDescription, /ISO-8601/);
+  assert.match(messageSearchDescription, /IMAP TEXT/);
+  assert.match(messageSearchDescription, /allMailboxes/);
+  assert.match(messageSearchDescription, /only INBOX/);
   const schema = z.object(messageSearchInputSchema);
   const parsed = schema.parse({ accountId: 'info' });
   assert.equal(parsed.query, '');

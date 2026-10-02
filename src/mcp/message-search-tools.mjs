@@ -25,7 +25,7 @@ const SAFE_ERRORS = new Set([
 ]);
 
 /** MCP description for message_search. */
-export const messageSearchDescription = 'Search the live IMAP provider for one active account. Does not read a local message mirror and does not fall back to cached messages when the provider fails. When mailboxId and mailboxIds are omitted, only INBOX is searched. Explicit mailboxId or mailboxIds search only those folders and do not discover other folders. Use mailbox_list to discover folders. Keeps message_search(accountId, query, limit) and also accepts subject, from, to, cc, mailboxId, mailboxIds, since/fromDate, before/toDate, isRead, isUnread, hasAttachment, flags/includeFlags, an opaque cursor, sortBy (date or uid), and sortOrder (asc or desc). Dates must be ISO-8601 and are compared in UTC. Limit is bounded from 1 to 200. A stalled connect, lock, or search returns remote_timeout. Returns items, results, nextCursor, hasMore, appliedFilters, and total. Credentials and arbitrary SQL are never accepted or returned.';
+export const messageSearchDescription = 'Search the live IMAP provider for one active account. Does not read a local message mirror and does not fall back to cached messages when the provider fails. query is sent as IMAP TEXT and searches message headers and body, not a header-only or pre-truncated UID window. Pages and cursors walk the complete IMAP SEARCH result in deterministic date or UID order, so an older or newer match beyond the first page is returned when cursor is passed. When mailboxId, mailboxIds, and allMailboxes are omitted, only INBOX is searched and folders are not listed. Explicit mailboxId or mailboxIds search only those folders and do not discover other folders. allMailboxes true is the opt-in that lists selectable folders and searches them; explicit mailbox ids still win and do not list. Use mailbox_list to discover folders. Keeps message_search(accountId, query, limit) and also accepts subject, from, to, cc, mailboxId, mailboxIds, allMailboxes, since/fromDate, before/toDate, isRead, isUnread, hasAttachment, flags/includeFlags, an opaque cursor, sortBy (date or uid), and sortOrder (asc or desc). Dates must be ISO-8601 and are compared in UTC. Limit is bounded from 1 to 200. A stalled connect, lock, or search returns remote_timeout. Returns items, results, nextCursor, hasMore, appliedFilters, and total. Credentials and arbitrary SQL are never accepted or returned.';
 
 /** Zod input schema for message_search. Original accountId, query, and limit stay valid. */
 export const messageSearchInputSchema = {
@@ -37,6 +37,7 @@ export const messageSearchInputSchema = {
   cc: z.string().optional(),
   mailboxId: z.string().min(1).optional(),
   mailboxIds: z.array(z.string().min(1)).optional(),
+  allMailboxes: z.boolean().optional(),
   since: z.string().optional(),
   fromDate: z.string().optional(),
   before: z.string().optional(),

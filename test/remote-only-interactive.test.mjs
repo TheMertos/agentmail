@@ -108,6 +108,50 @@ test('explicit mailbox ids search only those folders', async () => {
   assert.equal(page.total, 0);
 });
 
+test('allMailboxes lists selectable folders and omitted folders stay INBOX-only', async () => {
+  const listed = [];
+  const searched = [];
+  const service = new MailService({
+    accountRegistry: { get: () => ({ id: 'gmail' }), assertAccountAccess: () => ({ id: 'gmail' }) },
+    leaseBroker: {
+      acquire: async () => ({ leaseId: 'lease-1' }),
+      release: async () => {}
+    },
+    providerFactory: async () => ({
+      async listMailboxes() {
+        listed.push(true);
+        return [
+          { id: 'INBOX', path: 'INBOX', flags: [] },
+          { id: '[Gmail]/All Mail', path: '[Gmail]/All Mail', flags: [] },
+          { id: '[Gmail]', path: '[Gmail]', flags: ['\\Noselect'] }
+        ];
+      },
+      async searchSummaries(mailbox) {
+        searched.push(mailbox.path);
+        return [];
+      },
+      async close() {}
+    })
+  });
+  await service.searchRemote({ accountId: 'gmail', query: '124 bin veren', limit: 10 });
+  assert.equal(listed.length, 0);
+  assert.deepEqual(searched, ['INBOX']);
+  searched.length = 0;
+  await service.searchRemote({ accountId: 'gmail', query: '124 bin veren', allMailboxes: true, limit: 10 });
+  assert.equal(listed.length, 1);
+  assert.deepEqual(searched, ['INBOX', '[Gmail]/All Mail']);
+  searched.length = 0;
+  await service.searchRemote({
+    accountId: 'gmail',
+    query: '124 bin veren',
+    allMailboxes: true,
+    mailboxIds: ['Work'],
+    limit: 10
+  });
+  assert.equal(listed.length, 1);
+  assert.deepEqual(searched, ['Work']);
+});
+
 test('message_search does not list every mailbox', async () => {
   let listed = 0;
   const searched = [];
@@ -216,9 +260,9 @@ test('searchRemote returns live hits and does not call a store', async () => {
   assert.equal(page.items[0].uidValidity, '99');
 });
 
-test('searchSummaries fetches only the newest limited UIDs from a large SEARCH result', async () => {
+test('searchSummaries fetches every SEARCH uid, including matches older than the page limit', async () => {
   const fetched = [];
-  const allUids = Array.from({ length: 1000 }, (_, index) => index + 1);
+  const allUids = Array.from({ length: 201 }, (_, index) => index + 1);
   const provider = new ImapProvider({
     connection: { host: 'imap.example', port: 993 },
     credentials: { username: 'u', password: 'p' }
@@ -227,7 +271,7 @@ test('searchSummaries fetches only the newest limited UIDs from a large SEARCH r
   provider.client = {
     async getMailboxLock() { return { release() {} }; },
     async status() { return { uidValidity: 42 }; },
-    async search() { return allUids; },
+    async search() { return [0, -4, 5, 5, ...allUids]; },
     fetch(query) {
       fetched.push(String(query));
       const uids = String(query).split(',').map((uid) => Number(uid));
@@ -236,7 +280,7 @@ test('searchSummaries fetches only the newest limited UIDs from a large SEARCH r
           yield {
             uid,
             flags: [],
-            internalDate: new Date('2026-01-02T00:00:00.000Z'),
+            internalDate: new Date(Date.UTC(2026, 0, uid)),
             envelope: { subject: 'Live' },
             bodyStructure: {}
           };
@@ -248,17 +292,18 @@ test('searchSummaries fetches only the newest limited UIDs from a large SEARCH r
   };
   const hits = await provider.searchSummaries(
     { id: 'INBOX', path: 'INBOX' },
-    { query: 'Live', limit: 10, sortBy: 'date', sortOrder: 'desc' }
+    { query: '124 bin veren', limit: 10, sortBy: 'date', sortOrder: 'desc' }
   );
   const fetchedUids = fetched.flatMap((query) => query.split(',')).map((uid) => Number(uid));
-  assert.deepEqual(fetchedUids, [991, 992, 993, 994, 995, 996, 997, 998, 999, 1000]);
-  assert.equal(fetchedUids.includes(1), false);
-  assert.equal(fetchedUids.length, 10);
-  assert.deepEqual(hits.map((hit) => hit.uid), fetchedUids);
+  assert.equal(fetchedUids.includes(1), true);
+  assert.equal(fetchedUids.includes(201), true);
+  assert.equal(fetchedUids.includes(0), false);
+  assert.equal(fetchedUids.length, 201);
+  assert.deepEqual(hits.map((hit) => hit.uid).sort((left, right) => left - right), allUids);
 });
 
-test('searchSummaries fetches the oldest limited UIDs when sort order is ascending', async () => {
-  const fetched = [];
+test('searchSummaries maps a body query to IMAP TEXT', async () => {
+  let searched = null;
   const provider = new ImapProvider({
     connection: { host: 'imap.example', port: 993 },
     credentials: { username: 'u', password: 'p' }
@@ -267,16 +312,56 @@ test('searchSummaries fetches the oldest limited UIDs when sort order is ascendi
   provider.client = {
     async getMailboxLock() { return { release() {} }; },
     async status() { return { uidValidity: 42 }; },
-    async search() { return [40, 10, 30, 20]; },
+    async search(query) {
+      searched = query;
+      return [];
+    },
+    fetch() {
+      throw new Error('should_not_fetch');
+    },
+    async logout() {},
+    async close() {}
+  };
+  const hits = await provider.searchSummaries(
+    { id: 'INBOX', path: 'INBOX' },
+    { query: '124 bin veren', limit: 10 }
+  );
+  assert.deepEqual(hits, []);
+  assert.equal(searched.text, '124 bin veren');
+  assert.equal(searched.subject, undefined);
+  assert.equal(searched.header, undefined);
+  assert.equal(searched.body, undefined);
+});
+
+/**
+ * Live search service over a fixed UID set with one distinct date per UID.
+ * @param {number[]} uids IMAP SEARCH result.
+ * @param {{ onSearch?: (query: object) => void }} [options]
+ * @returns {MailService}
+ */
+function pagedSearchService(uids, options = {}) {
+  const provider = new ImapProvider({
+    connection: { host: 'imap.example', port: 993 },
+    credentials: { username: 'u', password: 'p' }
+  });
+  provider.connected = true;
+  provider.client = {
+    async connect() {},
+    async getMailboxLock() { return { release() {} }; },
+    async status() { return { uidValidity: 42 }; },
+    async search(query) {
+      options.onSearch?.(query);
+      return uids;
+    },
     fetch(query) {
-      fetched.push(String(query));
+      const requested = String(query).split(',').map((uid) => Number(uid));
       return (async function* () {
-        for (const uid of String(query).split(',').map((value) => Number(value))) {
+        for (const uid of requested) {
           yield {
             uid,
             flags: [],
-            internalDate: new Date('2026-01-02T00:00:00.000Z'),
-            envelope: { subject: 'Live' },
+            internalDate: new Date(Date.UTC(2026, 0, uid)),
+            envelope: { subject: 'Quote' },
             bodyStructure: {}
           };
         }
@@ -285,11 +370,100 @@ test('searchSummaries fetches the oldest limited UIDs when sort order is ascendi
     async logout() {},
     async close() {}
   };
-  await provider.searchSummaries(
-    { id: 'INBOX', path: 'INBOX' },
-    { query: 'Live', limit: 2, sortBy: 'uid', sortOrder: 'asc' }
-  );
-  assert.deepEqual(fetched, ['10,20']);
+  return new MailService({
+    accountRegistry: { get: () => ({ id: 'gmail' }), assertAccountAccess: () => ({ id: 'gmail' }) },
+    leaseBroker: {
+      acquire: async () => ({ leaseId: 'lease-1' }),
+      release: async () => {}
+    },
+    providerFactory: async () => ({
+      searchSummaries: (mailbox, criteria) => provider.searchSummaries(mailbox, criteria),
+      async close() { await provider.close(); }
+    })
+  });
+}
+
+test('cursor pages reach an older body match beyond the first date page', async () => {
+  const searches = [];
+  const service = pagedSearchService([1, 2, 3, 4, 5], { onSearch: (query) => searches.push(query) });
+  const criteria = {
+    accountId: 'gmail',
+    query: '124 bin veren',
+    limit: 2,
+    sortBy: 'date',
+    sortOrder: 'desc'
+  };
+  const first = await service.searchRemote(criteria);
+  assert.deepEqual(first.items.map((item) => item.uid), [5, 4]);
+  assert.equal(first.total, 5);
+  assert.equal(first.hasMore, true);
+  assert.equal(first.items.some((item) => item.uid === 1), false);
+  const second = await service.searchRemote({ ...criteria, cursor: first.nextCursor });
+  assert.deepEqual(second.items.map((item) => item.uid), [3, 2]);
+  assert.equal(second.total, 5);
+  const third = await service.searchRemote({ ...criteria, cursor: second.nextCursor });
+  assert.deepEqual(third.items.map((item) => item.uid), [1]);
+  assert.equal(third.hasMore, false);
+  assert.equal(third.nextCursor, null);
+  assert.ok(searches.every((query) => query.text === '124 bin veren'));
+});
+
+test('cursor pages reach a newer UID match beyond the first ascending page', async () => {
+  const service = pagedSearchService([5, 1, 4, 2, 3]);
+  const criteria = {
+    accountId: 'gmail',
+    query: '124 bin veren',
+    limit: 2,
+    sortBy: 'uid',
+    sortOrder: 'asc'
+  };
+  const first = await service.searchRemote(criteria);
+  assert.deepEqual(first.items.map((item) => item.uid), [1, 2]);
+  const second = await service.searchRemote({ ...criteria, cursor: first.nextCursor });
+  assert.deepEqual(second.items.map((item) => item.uid), [3, 4]);
+  const third = await service.searchRemote({ ...criteria, cursor: second.nextCursor });
+  assert.deepEqual(third.items.map((item) => item.uid), [5]);
+  assert.equal(third.hasMore, false);
+});
+
+test('remote date pages keep equal-date matches in message-key order', async () => {
+  const stamp = '2026-01-02T00:00:00.000Z';
+  const service = new MailService({
+    accountRegistry: { get: () => ({ id: 'gmail' }), assertAccountAccess: () => ({ id: 'gmail' }) },
+    leaseBroker: {
+      acquire: async () => ({ leaseId: 'lease-1' }),
+      release: async () => {}
+    },
+    providerFactory: async () => ({
+      async searchSummaries() {
+        return [2, 10, 1].map((uid) => ({
+          mailboxId: 'INBOX',
+          uid,
+          uidValidity: '42',
+          internalDate: stamp,
+          flags: [],
+          envelope: { subject: 'Quote' },
+          hasAttachment: false
+        }));
+      },
+      async close() {}
+    })
+  });
+  const criteria = {
+    accountId: 'gmail',
+    query: '124 bin veren',
+    limit: 2,
+    sortBy: 'date',
+    sortOrder: 'desc'
+  };
+  const first = await service.searchRemote(criteria);
+  assert.deepEqual(first.items.map((item) => item.uid), [2, 10]);
+  assert.equal(first.total, 3);
+  assert.equal(first.hasMore, true);
+  const second = await service.searchRemote({ ...criteria, cursor: first.nextCursor });
+  assert.deepEqual(second.items.map((item) => item.uid), [1]);
+  assert.equal(second.hasMore, false);
+  assert.equal(second.nextCursor, null);
 });
 
 test('searchSummaries uses IMAP SEARCH and does not STORE', async () => {

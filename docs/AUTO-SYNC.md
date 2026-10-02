@@ -52,4 +52,4 @@ sync_status_all()
 
 ## Live list semantics
 
-`message_search` and `message_read` query the live IMAP provider for the requested mailbox, UID, and UIDVALIDITY. They do not build the result from a local mirror. `message_search` searches INBOX when `mailboxId` and `mailboxIds` are omitted. Explicit folder ids search only those paths. `mailbox_list` is the folder discovery operation. A stalled IMAP connect, lock, or search returns `remote_timeout`.
+`message_search` and `message_read` query the live IMAP provider for the requested mailbox, UID, and UIDVALIDITY. They do not build the result from a local mirror. `query` is IMAP TEXT and searches headers and body. The cursor pages the complete IMAP SEARCH result in date or UID order, so matches older or newer than the first page stay reachable. `message_search` searches INBOX when `mailboxId`, `mailboxIds`, and `allMailboxes` are omitted and does not list folders. Explicit folder ids search only those paths. `allMailboxes: true` lists selectable folders and searches them; explicit mailbox ids still win. `mailbox_list` is the folder discovery operation. A stalled IMAP connect, lock, or search returns `remote_timeout`.
