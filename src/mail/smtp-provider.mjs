@@ -12,6 +12,11 @@ export class SmtpProvider {
     });
   }
 
+  /**
+   * Send the reviewed MIME. The SMTP envelope is From plus every To, Cc, and Bcc address.
+   * @param {string} mime Reviewed message, including Cc and Bcc headers when those recipients exist.
+   * @returns {Promise<{ accepted: string[], messageId: string|null }>}
+   */
   async send(mime) {
     const header = (name) => mime.match(new RegExp(`^${name}:\\s*(.+)$`, 'mi'))?.[1]?.trim();
     const splitAddresses = (value) => (value ?? '').split(',').map((item) => item.trim()).filter(Boolean);

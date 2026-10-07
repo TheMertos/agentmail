@@ -61,7 +61,7 @@ The final preview shows:
 - complete quoted original;
 - warnings for remote content, missing plain-text fallback, or changed signature version.
 
-The approval binds to a hash of all of the above. Any edit to body, recipients, account, attachments, quote, or signature invalidates it.
+The approval binds to a hash of all of the above. Any edit to body, To, Cc, Bcc, account, attachments, quote, or signature invalidates it.
 
 ## Account policy examples
 

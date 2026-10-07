@@ -53,26 +53,64 @@ function openScope(principal = 'mert') {
 }
 
 /**
- * Stage a CV PDF through the upload handler.
+ * Build upload handlers that may read regular files inside the scope directory.
+ * @param {{ store: SqliteMailStore, registry: object, dir: string }} scope Opened scope.
+ * @returns {ReturnType<typeof createAttachmentHandlers>}
+ */
+function handlersFor(scope) {
+  return createAttachmentHandlers({
+    store: scope.store,
+    registry: scope.registry,
+    attachmentRoots: [scope.dir]
+  });
+}
+
+/**
+ * Stage a CV PDF from a regular file inside an approved root.
  * @param {ReturnType<typeof createAttachmentHandlers>} handlers Upload handlers.
+ * @param {string} root Approved attachment root.
  * @param {string} [accountId] Account id.
  * @returns {object} Public attachment metadata.
  */
-function uploadCv(handlers, accountId = 'gmail') {
+function uploadCv(handlers, root, accountId = 'gmail') {
+  const filePath = join(root, 'Mert-Yagci-CV.pdf');
+  writeFileSync(filePath, PDF);
   const result = JSON.parse(handlers.attachmentUpload({
     accountId,
     filename: 'Mert-Yagci-CV.pdf',
     contentType: 'application/pdf',
-    contentBase64: PDF.toString('base64')
+    filePath
   }).content[0].text);
   assert.equal(result.error, undefined);
   return result;
 }
 
+/**
+ * Validate bytes read from a regular file inside a temporary approved root.
+ * @param {{ filename: string, contentType: string, content: Buffer }} input Upload fields and bytes.
+ * @param {object} [extra] Extra upload fields.
+ * @returns {object}
+ */
+function validateFromApprovedFile(input, extra = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'agentmail-attach-file-'));
+  try {
+    const filePath = join(root, input.filename);
+    writeFileSync(filePath, input.content);
+    return validateAttachmentUpload({
+      filename: input.filename,
+      contentType: input.contentType,
+      filePath,
+      ...extra
+    }, { roots: [root] });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 test('attachment upload stages a CV PDF and returns only metadata', () => {
   const scope = openScope();
-  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry });
-  const staged = uploadCv(handlers);
+  const handlers = handlersFor(scope);
+  const staged = uploadCv(handlers, scope.dir);
   assert.equal(staged.filename, 'Mert-Yagci-CV.pdf');
   assert.equal(staged.contentType, 'application/pdf');
   assert.equal(staged.size, PDF.length);
@@ -89,8 +127,8 @@ test('attachment upload stages a CV PDF and returns only metadata', () => {
 
 test('draft_create and draft_read keep the staged attachment list', () => {
   const scope = openScope();
-  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry });
-  const staged = uploadCv(handlers);
+  const handlers = handlersFor(scope);
+  const staged = uploadCv(handlers, scope.dir);
   const draft = scope.store.createDraft({
     accountId: 'gmail',
     headers: { to: ['jobs@example.test'], subject: 'Application' },
@@ -124,8 +162,8 @@ test('drafts without attachments stay readable and empty', () => {
 
 test('message preview resolves exact attachment metadata', () => {
   const scope = openScope();
-  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry });
-  const staged = uploadCv(handlers);
+  const handlers = handlersFor(scope);
+  const staged = uploadCv(handlers, scope.dir);
   const preview = handlers.previewAttachments('gmail', [{ id: staged.id }]);
   assert.deepEqual(preview, [{
     id: staged.id,
@@ -139,8 +177,8 @@ test('message preview resolves exact attachment metadata', () => {
 
 test('approved CV PDF round-trips through multipart MIME and Sent verification', async () => {
   const scope = openScope();
-  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry });
-  const staged = uploadCv(handlers);
+  const handlers = handlersFor(scope);
+  const staged = uploadCv(handlers, scope.dir);
   const reviewed = [
     'From: mert@example.test',
     'To: jobs@example.test',
@@ -198,8 +236,8 @@ test('approved CV PDF round-trips through multipart MIME and Sent verification',
 
 test('changing an attachment invalidates the approval and blocks send', () => {
   const scope = openScope();
-  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry });
-  const staged = uploadCv(handlers);
+  const handlers = handlersFor(scope);
+  const staged = uploadCv(handlers, scope.dir);
   const attachments = handlers.previewAttachments('gmail', [{ id: staged.id }]);
   const payload = normalizeSendPayload({
     accountId: 'gmail',
@@ -280,22 +318,28 @@ test('missing filePath fails closed before any attachment is staged', () => {
 
 test('invalid uploads fail closed and never read a host path', () => {
   const pem = '-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n';
-  const cases = [
-    { filename: '../../etc/passwd', contentType: 'text/plain', contentBase64: Buffer.from('nope').toString('base64'), code: 'attachment_name_rejected' },
-    { filename: '/home/mert/.ssh/id_rsa', contentType: 'text/plain', contentBase64: Buffer.from('nope').toString('base64'), code: 'attachment_name_rejected' },
-    { filename: 'payload.exe', contentType: 'application/octet-stream', contentBase64: Buffer.from('MZ').toString('base64'), code: 'attachment_name_rejected' },
-    { filename: '.env', contentType: 'text/plain', contentBase64: Buffer.from('A=1').toString('base64'), code: 'attachment_name_rejected' },
-    { filename: 'id_rsa', contentType: 'text/plain', contentBase64: Buffer.from('key').toString('base64'), code: 'attachment_name_rejected' },
-    { filename: 'credentials.json', contentType: 'application/json', contentBase64: Buffer.from('{}').toString('base64'), code: 'attachment_name_rejected' },
-    { filename: 'notes.txt', contentType: 'application/x-sh', contentBase64: Buffer.from('echo').toString('base64'), code: 'attachment_type_rejected' },
-    { filename: 'notes.txt', contentType: 'text/plain', contentBase64: Buffer.from(pem).toString('base64'), code: 'attachment_secret_rejected' },
-    { filename: 'notes.txt', contentType: 'text/plain', contentBase64: Buffer.from('password=hunter2\n').toString('base64'), code: 'attachment_secret_rejected' },
-    { filename: 'cv.pdf', contentType: 'application/pdf', contentBase64: Buffer.from('MZ-not-a-pdf').toString('base64'), code: 'attachment_type_rejected' },
-    { filename: 'cv.pdf', contentType: 'application/pdf', contentBase64: Buffer.from(pem).toString('base64'), code: 'attachment_secret_rejected' },
-    { filename: 'cv.pdf', contentType: 'application/pdf', path: '/etc/passwd', contentBase64: PDF.toString('base64'), code: 'attachment_path_rejected' }
+  const structural = [
+    { filename: '../../etc/passwd', contentType: 'text/plain', code: 'attachment_name_rejected' },
+    { filename: '/home/mert/.ssh/id_rsa', contentType: 'text/plain', code: 'attachment_name_rejected' },
+    { filename: 'payload.exe', contentType: 'application/octet-stream', code: 'attachment_name_rejected' },
+    { filename: '.env', contentType: 'text/plain', code: 'attachment_name_rejected' },
+    { filename: 'id_rsa', contentType: 'text/plain', code: 'attachment_name_rejected' },
+    { filename: 'credentials.json', contentType: 'application/json', code: 'attachment_name_rejected' },
+    { filename: 'notes.txt', contentType: 'application/x-sh', code: 'attachment_type_rejected' },
+    { filename: 'cv.pdf', contentType: 'application/pdf', path: '/etc/passwd', code: 'attachment_path_rejected' },
+    { filename: 'notes.txt', contentType: 'text/plain', contentBase64: Buffer.from('hello\n').toString('base64'), code: 'attachment_path_rejected' }
   ];
-  for (const input of cases) {
+  for (const input of structural) {
     assert.throws(() => validateAttachmentUpload(input), new RegExp(input.code), input.filename);
+  }
+  const fromFile = [
+    { filename: 'notes.txt', contentType: 'text/plain', content: Buffer.from(pem), code: 'attachment_secret_rejected' },
+    { filename: 'notes.txt', contentType: 'text/plain', content: Buffer.from('password=hunter2\n'), code: 'attachment_secret_rejected' },
+    { filename: 'cv.pdf', contentType: 'application/pdf', content: Buffer.from('MZ-not-a-pdf'), code: 'attachment_type_rejected' },
+    { filename: 'cv.pdf', contentType: 'application/pdf', content: Buffer.from(pem), code: 'attachment_secret_rejected' }
+  ];
+  for (const input of fromFile) {
+    assert.throws(() => validateFromApprovedFile(input), (error) => error.code === input.code, input.filename);
   }
   assert.throws(() => assertAttachmentSetLimits(
     Array.from({ length: ATTACHMENT_LIMITS.maxCount + 1 }, () => ({ size: 1 }))
@@ -322,11 +366,7 @@ test('attachment magic bytes and filename types are fail-closed against spoofing
     { filename: 'pic.webp', contentType: 'image/webp', content: Buffer.concat([Buffer.from('RIFF'), Buffer.from([0, 0, 0, 0]), Buffer.from('WEBP')]) }
   ];
   for (const input of accepted) {
-    const staged = validateAttachmentUpload({
-      filename: input.filename,
-      contentType: input.contentType,
-      contentBase64: input.content.toString('base64')
-    });
+    const staged = validateFromApprovedFile(input);
     assert.equal(staged.contentType, input.contentType, input.filename);
     assert.equal(staged.content.equals(input.content), true, input.filename);
   }
@@ -349,11 +389,7 @@ test('attachment magic bytes and filename types are fail-closed against spoofing
     { filename: 'notes.txt', contentType: 'text/plain', content: Buffer.from(`${secret}\n`), code: 'attachment_secret_rejected' }
   ];
   for (const input of rejected) {
-    assert.throws(() => validateAttachmentUpload({
-      filename: input.filename,
-      contentType: input.contentType,
-      contentBase64: input.content.toString('base64')
-    }), (error) => {
+    assert.throws(() => validateFromApprovedFile(input), (error) => {
       assert.equal(error.code, input.code, input.filename);
       const dumped = `${error.message} ${JSON.stringify(error)}`;
       assert.equal(dumped.includes('hunter2'), false);
@@ -365,19 +401,21 @@ test('attachment magic bytes and filename types are fail-closed against spoofing
 
 test('upload errors and metadata results omit base64 bytes and plaintext secrets', () => {
   const scope = openScope();
-  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry });
+  const handlers = handlersFor(scope);
   const secret = 'password=hunter2';
   const encoded = Buffer.from(`${secret}\n`).toString('base64');
+  const notesPath = join(scope.dir, 'notes.txt');
+  writeFileSync(notesPath, `${secret}\n`);
   const rejected = handlers.attachmentUpload({
     accountId: 'gmail',
     filename: 'notes.txt',
     contentType: 'text/plain',
-    contentBase64: encoded
+    filePath: notesPath
   }).content[0].text;
   assert.equal(JSON.parse(rejected).error, 'attachment_secret_rejected');
   assert.equal(rejected.includes('hunter2'), false);
   assert.equal(rejected.includes(encoded), false);
-  const staged = uploadCv(handlers);
+  const staged = uploadCv(handlers, scope.dir);
   const body = JSON.stringify(staged);
   assert.equal(body.includes(PDF.toString('base64')), false);
   assert.equal(body.includes(PDF.toString('latin1')), false);
@@ -386,10 +424,10 @@ test('upload errors and metadata results omit base64 bytes and plaintext secrets
 
 test('a PDF that mentions the word password is still accepted', () => {
   const pdf = Buffer.concat([PDF, Buffer.from('\n% curriculum password wording\n')]);
-  const staged = validateAttachmentUpload({
+  const staged = validateFromApprovedFile({
     filename: 'Mert-Yagci-CV.pdf',
     contentType: 'application/pdf',
-    contentBase64: pdf.toString('base64')
+    content: pdf
   });
   assert.equal(staged.size, pdf.length);
 });
@@ -402,15 +440,17 @@ test('staged attachments are isolated by principal and account', () => {
   mert.register(ACCOUNT);
   mert.register({ ...ACCOUNT, id: 'work', email: 'work@example.test', secretRef: 'ref-work' });
   other.register({ ...ACCOUNT, id: 'other-mail', email: 'other@example.test', secretRef: 'ref-other' });
-  const mertHandlers = createAttachmentHandlers({ store, registry: mert });
-  const otherHandlers = createAttachmentHandlers({ store, registry: other });
-  const staged = uploadCv(mertHandlers);
+  const mertHandlers = createAttachmentHandlers({ store, registry: mert, attachmentRoots: [dir] });
+  const otherHandlers = createAttachmentHandlers({ store, registry: other, attachmentRoots: [dir] });
+  const staged = uploadCv(mertHandlers, dir);
+  const deniedPath = join(dir, 'other-cv.pdf');
+  writeFileSync(deniedPath, PDF);
 
   const denied = JSON.parse(otherHandlers.attachmentUpload({
     accountId: 'gmail',
     filename: 'Mert-Yagci-CV.pdf',
     contentType: 'application/pdf',
-    contentBase64: PDF.toString('base64')
+    filePath: deniedPath
   }).content[0].text);
   assert.equal(denied.error, 'access_denied');
   assert.equal(store.getStagedAttachment({

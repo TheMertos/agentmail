@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApproval } from '../src/core/approval.mjs';
@@ -25,13 +25,17 @@ const ACCOUNT = {
  * @returns {{ handlers: object, payload: object, approval: object }}
  */
 function approvedCv(store, registry) {
-  const handlers = createAttachmentHandlers({ store, registry });
+  const root = mkdtempSync(join(tmpdir(), 'agentmail-send-root-'));
+  const filePath = join(root, 'Mert-Yagci-CV.pdf');
+  writeFileSync(filePath, PDF);
+  const handlers = createAttachmentHandlers({ store, registry, attachmentRoots: [root] });
   const staged = JSON.parse(handlers.attachmentUpload({
     accountId: 'gmail',
     filename: 'Mert-Yagci-CV.pdf',
     contentType: 'application/pdf',
-    contentBase64: PDF.toString('base64')
+    filePath
   }).content[0].text);
+  rmSync(root, { recursive: true, force: true });
   const payload = normalizeSendPayload({
     accountId: 'gmail',
     to: ['jobs@example.test'],

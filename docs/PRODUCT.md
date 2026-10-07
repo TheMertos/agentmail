@@ -26,7 +26,7 @@ The default policy is:
 | download/open attachment | suggest only | yes | no |
 | change account/security settings | no | yes | yes |
 
-Approval is bound to a content hash, recipient list, attachment list, and account. Any change invalidates the approval.
+Approval is bound to a content hash, To, Cc, Bcc, attachment list, and account. Any change invalidates the approval.
 
 ## Acceptance criteria for the first slice
 
@@ -36,7 +36,7 @@ Approval is bound to a content hash, recipient list, attachment list, and accoun
 - An AI draft is visibly marked as a draft and includes model/provider metadata.
 - Send preview displays From, To, Cc, Bcc, subject, rendered body, raw quoted original, and attachments.
 - The send endpoint rejects requests without a valid, unexpired approval token.
-- The approval token becomes invalid if recipients, body, account, or attachments change.
+- The approval token becomes invalid if To, Cc, Bcc, body, account, or attachments change.
 - A successful send is verified by provider response and a subsequent read-back/sent-folder reconciliation.
 - Audit records contain action, actor, account, target message IDs, content hash, decision, timestamp, and provider result; they never contain passwords or full message bodies.
 

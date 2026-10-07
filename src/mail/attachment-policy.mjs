@@ -307,7 +307,7 @@ export function parseAttachmentRoots(value) {
 
 /**
  * Validate one uploaded attachment and return its bytes plus public metadata fields.
- * `filePath` is read only from `options.roots`. Other path keys and mail content are rejected.
+ * `filePath` is read only from `options.roots`. `contentBase64`, other path keys, and mail content are rejected.
  * @param {object} input Upload fields.
  * @param {{ roots?: string[] }} [options] Approved absolute roots for `filePath`.
  * @returns {{ filename: string, contentType: string, size: number, sha256: string, content: Buffer }}
@@ -319,6 +319,7 @@ export function validateAttachmentUpload(input, options = {}) {
     throw attachmentError('attachment_type_rejected');
   }
   assertExtensionMatchesType(input.filename, input.contentType);
+  if (input.contentBase64 != null && input.contentBase64 !== '') throw attachmentError('attachment_path_rejected');
   const hasFile = input.filePath != null && input.filePath !== '';
   if (!hasFile) throw attachmentError('attachment_path_rejected');
   const content = readApprovedFile(input.filePath, options.roots ?? []);

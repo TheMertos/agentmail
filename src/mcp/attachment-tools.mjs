@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import * as z from 'zod/v4';
 import { assertAttachmentSetLimits, attachmentError, validateAttachmentUpload } from '../mail/attachment-policy.mjs';
 import { assembleOutgoingMime } from '../mail/outgoing-mime.mjs';
+import { normalizeRecipientList } from '../mail/recipients.mjs';
 
 /** MCP description for attachment_upload. */
 export const attachmentUploadDescription = 'Stage an outgoing attachment from filePath inside an approved root. Only regular files inside that root are accepted; arbitrary paths and paths from mail content are rejected and never read. Returns id, filename, content type, size, and sha256 only. Path traversal, symlink escapes, executable names, credential-like names, disallowed types, oversized payloads, and plaintext secrets are rejected.';
@@ -90,15 +91,18 @@ export function resolveReplyAttachments(resolve, accountId, stagedRefs) {
 }
 
 /**
- * Normalize a send payload so approval creation and send hash the same attachment list.
- * Missing attachments become an empty list. Duplicate ids and identical hashes are removed.
+ * Normalize a send payload so approval creation and send hash the same recipient and attachment lists.
+ * To, Cc, and Bcc use one address normalizer. Missing Cc, Bcc, and attachments become empty lists.
+ * Duplicate attachment ids and identical hashes are removed.
  * @param {object} input Send fields.
  * @returns {object}
  */
 export function normalizeSendPayload(input) {
   return {
     accountId: input.accountId,
-    to: input.to,
+    to: normalizeRecipientList(input.to, { required: true }),
+    cc: normalizeRecipientList(input.cc),
+    bcc: normalizeRecipientList(input.bcc),
     subject: input.subject,
     text: input.text,
     html: input.html,
@@ -161,7 +165,7 @@ export function createAttachmentHandlers({ store, registry, attachmentRoots = []
   }
 
   /**
-   * Stage base64 content and return metadata only.
+   * Stage a regular file from an approved root and return metadata only.
    * @param {object} args Upload arguments.
    * @returns {{ content: { type: string, text: string }[] }}
    */

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -64,18 +64,21 @@ function openScope(principal = 'mert') {
 }
 
 /**
- * Stage one PDF through the upload handler.
+ * Stage one PDF from a regular file inside an approved root.
  * @param {ReturnType<typeof createAttachmentHandlers>} handlers Upload handlers.
+ * @param {string} root Approved attachment root.
  * @param {string} filename Attachment filename.
  * @param {Buffer} content PDF bytes.
  * @returns {object} Public metadata.
  */
-function uploadPdf(handlers, filename, content) {
+function uploadPdf(handlers, root, filename, content) {
+  const filePath = join(root, filename);
+  writeFileSync(filePath, content);
   const result = JSON.parse(handlers.attachmentUpload({
     accountId: 'gmail',
     filename,
     contentType: 'application/pdf',
-    contentBase64: content.toString('base64')
+    filePath
   }).content[0].text);
   assert.equal(result.error, undefined);
   return result;
@@ -168,10 +171,10 @@ test('reply attachment list defaults to empty and does not inherit source attach
 
 test('incoming PDF is absent when a reply sends two newly staged PDFs', async () => {
   const scope = openScope();
-  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry });
+  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry, attachmentRoots: [scope.dir] });
   const key = storeIncoming(scope.store);
-  const first = uploadPdf(handlers, 'reply-a.pdf', REPLY_A);
-  const second = uploadPdf(handlers, 'reply-b.pdf', REPLY_B);
+  const first = uploadPdf(handlers, scope.dir, 'reply-a.pdf', REPLY_A);
+  const second = uploadPdf(handlers, scope.dir, 'reply-b.pdf', REPLY_B);
   const attachments = resolveReplyAttachments(
     (accountId, refs) => handlers.previewAttachments(accountId, refs),
     'gmail',
@@ -242,9 +245,9 @@ test('incoming PDF is absent when a reply sends two newly staged PDFs', async ()
 
 test('reply preview/send MIME keeps one staged response attachment and drops source attachment', async () => {
   const scope = openScope();
-  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry });
+  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry, attachmentRoots: [scope.dir] });
   const sourceKey = storeIncoming(scope.store);
-  const response = uploadPdf(handlers, 'response.pdf', REPLY_A);
+  const response = uploadPdf(handlers, scope.dir, 'response.pdf', REPLY_A);
   const previewBinding = createPreviewBinding({
     store: scope.store,
     registry: scope.registry,
@@ -301,9 +304,9 @@ test('reply preview/send MIME keeps one staged response attachment and drops sou
 
 test('Turkish preview MIME preserves UTF-8 bodies, RFC 2047 subject, and one response PDF', async () => {
   const scope = openScope();
-  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry });
+  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry, attachmentRoots: [scope.dir] });
   const sourceKey = storeIncoming(scope.store);
-  const response = uploadPdf(handlers, 'response.pdf', REPLY_A);
+  const response = uploadPdf(handlers, scope.dir, 'response.pdf', REPLY_A);
   const pendingPreviews = new Map();
   const pendingApprovals = new Map();
   const previewBinding = createPreviewBinding({
@@ -356,10 +359,10 @@ test('Turkish preview MIME preserves UTF-8 bodies, RFC 2047 subject, and one res
 
 test('three staged attachments keep caller order and metadata', () => {
   const scope = openScope();
-  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry });
-  const gamma = uploadPdf(handlers, 'gamma.pdf', REPLY_C);
-  const alpha = uploadPdf(handlers, 'alpha.pdf', REPLY_A);
-  const beta = uploadPdf(handlers, 'beta.pdf', REPLY_B);
+  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry, attachmentRoots: [scope.dir] });
+  const gamma = uploadPdf(handlers, scope.dir, 'gamma.pdf', REPLY_C);
+  const alpha = uploadPdf(handlers, scope.dir, 'alpha.pdf', REPLY_A);
+  const beta = uploadPdf(handlers, scope.dir, 'beta.pdf', REPLY_B);
   const attachments = handlers.previewAttachments('gmail', [
     { id: gamma.id },
     { id: alpha.id },
@@ -386,10 +389,10 @@ test('three staged attachments keep caller order and metadata', () => {
 
 test('duplicate staged ids and identical sha256 values are not repeated', () => {
   const scope = openScope();
-  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry });
-  const original = uploadPdf(handlers, 'reply-a.pdf', REPLY_A);
-  const sameBytes = uploadPdf(handlers, 'reply-a-copy.pdf', REPLY_A);
-  const other = uploadPdf(handlers, 'reply-b.pdf', REPLY_B);
+  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry, attachmentRoots: [scope.dir] });
+  const original = uploadPdf(handlers, scope.dir, 'reply-a.pdf', REPLY_A);
+  const sameBytes = uploadPdf(handlers, scope.dir, 'reply-a-copy.pdf', REPLY_A);
+  const other = uploadPdf(handlers, scope.dir, 'reply-b.pdf', REPLY_B);
   const attachments = handlers.previewAttachments('gmail', [
     { id: original.id },
     { id: original.id },
@@ -420,10 +423,10 @@ test('duplicate staged ids and identical sha256 values are not repeated', () => 
 
 test('tampering with one attachment in a reply set invalidates approval', () => {
   const scope = openScope();
-  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry });
-  const first = uploadPdf(handlers, 'reply-a.pdf', REPLY_A);
-  const second = uploadPdf(handlers, 'reply-b.pdf', REPLY_B);
-  const third = uploadPdf(handlers, 'gamma.pdf', REPLY_C);
+  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry, attachmentRoots: [scope.dir] });
+  const first = uploadPdf(handlers, scope.dir, 'reply-a.pdf', REPLY_A);
+  const second = uploadPdf(handlers, scope.dir, 'reply-b.pdf', REPLY_B);
+  const third = uploadPdf(handlers, scope.dir, 'gamma.pdf', REPLY_C);
   const attachments = handlers.previewAttachments('gmail', [
     { id: first.id },
     { id: second.id },
@@ -457,10 +460,10 @@ test('tampering with one attachment in a reply set invalidates approval', () => 
 
 test('reply attachment count stays within the existing limit', () => {
   const scope = openScope();
-  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry });
+  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry, attachmentRoots: [scope.dir] });
   const refs = [];
   for (let index = 0; index < ATTACHMENT_LIMITS.maxCount + 1; index += 1) {
-    refs.push({ id: uploadPdf(handlers, `file-${index}.pdf`, pdfNamed(`file-${index}`)).id });
+    refs.push({ id: uploadPdf(handlers, scope.dir, `file-${index}.pdf`, pdfNamed(`file-${index}`)).id });
   }
   assert.throws(() => handlers.previewAttachments('gmail', refs), /attachment_limit_exceeded/);
   assert.equal(handlers.previewAttachments('gmail', refs.slice(0, ATTACHMENT_LIMITS.maxCount)).length, ATTACHMENT_LIMITS.maxCount);

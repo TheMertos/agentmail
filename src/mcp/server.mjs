@@ -266,7 +266,7 @@ server.registerTool('signature_set_default', {
 });
 
 server.registerTool('message_preview', {
-  description: 'Render the exact outgoing text/HTML from new content, the selected or default signature, the AI footer exactly once, and an optional quoted source. A sourceMessageKey reply quotes the complete source text and HTML instead of a caller snippet. Returns a short-lived previewId bound to that text, HTML, signature, quote, attachments, account, and principal. Source attachments are not inherited by reply. Optional staged attachment ids are returned as exact filename, content type, size, and sha256 metadata; omitted ids yield an empty attachment list. send_approval_create retrieves this stored preview server-side and does not require copied text, HTML, MIME, or attachment metadata.',
+  description: 'Render the exact outgoing text/HTML from new content, the selected or default signature, the AI footer exactly once, and an optional quoted source. Optional cc and bcc are normalized with the same bare-address rules as To and stored on the preview binding; omitted lists are empty and do not change reply or reply-all. A sourceMessageKey reply quotes the complete source text and HTML instead of a caller snippet. Returns a short-lived previewId bound to that text, HTML, signature, quote, cc, bcc, attachments, account, and principal. Source attachments are not inherited by reply. Optional staged attachment ids are returned as exact filename, content type, size, and sha256 metadata; omitted ids yield an empty attachment list. send_approval_create retrieves this stored preview server-side and does not require copied text, HTML, MIME, or attachment metadata.',
   inputSchema: {
     accountId: z.string().min(1),
     newText: z.string(),
@@ -277,22 +277,26 @@ server.registerTool('message_preview', {
     quoteDepth: z.number().int().min(1).max(10).optional(),
     sourceMessageKey: z.string().optional(),
     replyMode: z.enum(['reply', 'reply-all']).optional(),
+    cc: z.array(z.string()).optional(),
+    bcc: z.array(z.string()).optional(),
     attachments: z.array(stagedAttachmentRefSchema).optional()
   }
 }, async (args) => previewBinding.messagePreview(args));
 
 server.registerTool('send_approval_create', {
-  description: 'Create a short-lived approval from the exact stored message_preview. The server retrieves the preview text, HTML, selected/default signature, and explicit staged attachments, then builds the reviewed MIME; callers must not copy body or MIME fields. A missing preview, another account or principal, changed recipient, changed signature, or changed attachment is rejected. Required before message_send.',
+  description: 'Create a short-lived approval from the exact stored message_preview. The server retrieves the preview text, HTML, selected/default signature, cc, bcc, and explicit staged attachments, then builds the reviewed MIME with To and, when present, Cc and Bcc; callers must not copy body or MIME fields. Optional cc and bcc must match the preview after the same normalization as To. A missing preview, another account or principal, changed recipient, changed cc or bcc, changed signature, or changed attachment is rejected. Required before message_send.',
   inputSchema: {
     previewId: z.string().uuid(),
     accountId: z.string().min(1),
     to: z.array(z.string()).min(1),
+    cc: z.array(z.string()).optional(),
+    bcc: z.array(z.string()).optional(),
     subject: z.string()
   }
 }, async (args) => previewBinding.sendApprovalCreate(args));
 
 server.registerTool('message_send', {
-  description: 'Send the exact server-stored payload identified by approvalId after approval and principal/account/attachment checks, save it to Sent, and verify the copy. No caller-controlled body, MIME, recipient, or attachment fields are accepted. Source attachments are never inherited.',
+  description: 'Send the exact server-stored payload identified by approvalId after approval and principal/account/recipient checks, including bound To, Cc, and Bcc. The SMTP envelope receives every recipient, the same MIME is saved to Sent, and that copy is verified. No caller-controlled body, MIME, recipient, or attachment fields are accepted. Source attachments are never inherited.',
   inputSchema: {
     approvalId: z.string().uuid()
   }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { composeOutgoingMessage } from '../src/core/compose-message.mjs';
@@ -363,12 +363,18 @@ test('send approval attachments must match the preview exactly', async () => {
   assert.equal(existsSync(bindingUrl), true, 'preview binding not implemented');
   const { createPreviewBinding } = await import('../src/mcp/preview-binding.mjs');
   const scope = openInfo();
-  const handlers = createAttachmentHandlers({ store: scope.store, registry: scope.registry });
+  const filePath = join(scope.dir, 'Mert-Yagci-CV.pdf');
+  writeFileSync(filePath, PDF);
+  const handlers = createAttachmentHandlers({
+    store: scope.store,
+    registry: scope.registry,
+    attachmentRoots: [scope.dir]
+  });
   const staged = parse(handlers.attachmentUpload({
     accountId: 'info',
     filename: 'Mert-Yagci-CV.pdf',
     contentType: 'application/pdf',
-    contentBase64: PDF.toString('base64')
+    filePath
   }));
   const pendingPreviews = new Map();
   const pendingApprovals = new Map();

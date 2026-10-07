@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { createApproval } from '../core/approval.mjs';
 import { composeOutgoingMessage } from '../core/compose-message.mjs';
 import { createAttachmentHandlers, normalizeSendPayload, resolveReplyAttachments } from './attachment-tools.mjs';
+import { normalizeRecipientList, sameRecipientList } from '../mail/recipients.mjs';
 import { resolveReplyTarget } from '../mail/reply-target.mjs';
 
 const { simpleParser } = createRequire(import.meta.url)('mailparser');
@@ -38,8 +39,8 @@ function sameAttachments(expected, actual) {
 
 /**
  * True when the send payload is the exact preview for this principal.
- * The reviewed MIME body must contain the preview text and HTML literally.
- * @param {{ accountId: string, principal: string, text: string, html: string, attachments?: object[] }} binding Stored preview binding.
+ * Cc and Bcc must match the preview. The reviewed MIME body must contain the preview text and HTML literally.
+ * @param {{ accountId: string, principal: string, text: string, html: string, cc?: string[], bcc?: string[], attachments?: object[] }} binding Stored preview binding.
  * @param {{ accountId: string, text: string, html: string, mime: string, attachments?: object[] }} payload Normalized send payload.
  * @param {string} principal Runtime principal.
  * @returns {boolean}
@@ -49,6 +50,7 @@ export function matchesPreviewBinding(binding, payload, principal) {
   if (binding.accountId !== payload?.accountId) return false;
   if (binding.text !== payload.text || binding.html !== payload.html) return false;
   if (!sameAttachments(binding.attachments, payload.attachments)) return false;
+  if (!sameRecipientList(binding.cc, payload.cc) || !sameRecipientList(binding.bcc, payload.bcc)) return false;
   if (typeof payload.mime !== 'string') return false;
   const bodyBreak = payload.mime.indexOf('\r\n\r\n');
   if (bodyBreak === -1) return false;
@@ -77,19 +79,36 @@ function encodeSubject(subject) {
 }
 
 /**
+ * Format one address header when the list is non-empty.
+ * An empty Cc or Bcc list omits the header so To-only messages stay unchanged.
+ * @param {string} name Header name.
+ * @param {string[]} addresses Normalized addresses.
+ * @returns {string[]}
+ */
+function addressHeader(name, addresses) {
+  if (!addresses?.length) return [];
+  return [`${name}: ${addresses.join(', ')}`];
+}
+
+/**
  * Build the exact reviewed MIME from the preview bodies and envelope fields.
  * @param {{ email?: string }} account Account metadata.
- * @param {string[]} to Recipients.
+ * @param {string[]} to To recipients.
+ * @param {string[]} cc Cc recipients.
+ * @param {string[]} bcc Bcc recipients.
  * @param {string} subject Subject.
  * @param {string} bodyText Exact preview text.
  * @param {string} bodyHtml Exact preview HTML.
+ * @param {{ inReplyTo?: string, references?: string[] }|null} [replyHeaders] Reply header fields.
  * @returns {string}
  */
-function buildPreviewMime(account, to, subject, bodyText, bodyHtml, replyHeaders = null) {
+function buildPreviewMime(account, to, cc, bcc, subject, bodyText, bodyHtml, replyHeaders = null) {
   const boundary = `agentmail_preview_${randomUUID()}`;
   const headers = [
     `From: ${account?.email ?? ''}`,
     `To: ${to.join(', ')}`,
+    ...addressHeader('Cc', cc),
+    ...addressHeader('Bcc', bcc),
     `Subject: ${encodeSubject(subject)}`,
     'MIME-Version: 1.0',
     ...(replyHeaders?.inReplyTo ? [`In-Reply-To: ${replyHeaders.inReplyTo}`] : []),
@@ -161,7 +180,7 @@ async function completeSourceQuote(message) {
 /**
  * Build message_preview and send_approval_create handlers bound to one preview map.
  * Approval creation accepts only an unexpired preview for the same account and principal,
- * and only when text, HTML, attachments, and MIME match that preview exactly.
+ * and only when text, HTML, Cc, Bcc, attachments, and MIME match that preview exactly.
  * @param {{ store: object, registry: { principal: string, assertAccountAccess: Function }, pendingPreviews: Map<string, object>, pendingApprovals: Map<string, object>, attachmentsApi?: object, now?: () => number, previewTtlSeconds?: number, approvalTtlSeconds?: number }} deps Store, principal registry, and pending maps.
  * @returns {{ messagePreview: Function, sendApprovalCreate: Function }}
  */
@@ -181,11 +200,19 @@ export function createPreviewBinding({
    * @param {object} args Preview tool arguments.
    * @returns {Promise<{ content: { type: string, text: string }[] }>}
    */
-  async function messagePreview({ accountId, newText, newHtml, signatureId, quoteText, quoteHtml, quoteDepth, sourceMessageKey, replyMode = 'reply', attachments }) {
+  async function messagePreview({ accountId, newText, newHtml, signatureId, quoteText, quoteHtml, quoteDepth, sourceMessageKey, replyMode = 'reply', attachments, cc, bcc }) {
     try {
       registry.assertAccountAccess(accountId);
     } catch {
       return text({ error: 'access_denied' });
+    }
+    let normalizedCc;
+    let normalizedBcc;
+    try {
+      normalizedCc = normalizeRecipientList(cc);
+      normalizedBcc = normalizeRecipientList(bcc);
+    } catch {
+      return text({ error: 'recipients_invalid' });
     }
     let signature;
     try {
@@ -242,6 +269,8 @@ export function createPreviewBinding({
         references: replyTarget.headers.references
       } : null,
       attachments: replyAttachments,
+      cc: normalizedCc,
+      bcc: normalizedBcc,
       expiresAt: now() + previewTtlSeconds
     };
     pendingPreviews.set(preview.id, preview);
@@ -251,6 +280,8 @@ export function createPreviewBinding({
       html: preview.html,
       signature: preview.signature,
       attachments: preview.attachments,
+      cc: preview.cc,
+      bcc: preview.bcc,
       expiresAt: preview.expiresAt
     });
   }
@@ -261,7 +292,7 @@ export function createPreviewBinding({
    * @param {object} args Approval tool arguments.
    * @returns {Promise<{ content: { type: string, text: string }[] }>}
    */
-  async function sendApprovalCreate({ previewId, accountId, to, subject, text: bodyText, html, mime, attachments } = {}) {
+  async function sendApprovalCreate({ previewId, accountId, to, cc, bcc, subject, text: bodyText, html, mime, attachments } = {}) {
     if (!previewId) return text({ error: 'preview_required' });
     const preview = pendingPreviews.get(previewId);
     if (!preview || !Number.isInteger(preview.expiresAt) || now() > preview.expiresAt || preview.principal !== registry.principal) {
@@ -272,17 +303,30 @@ export function createPreviewBinding({
     } catch {
       return text({ error: 'access_denied' });
     }
-    if (preview.accountId !== accountId || !Array.isArray(to) || !to.length || typeof subject !== 'string') {
+    let toList;
+    let ccList;
+    let bccList;
+    try {
+      toList = normalizeRecipientList(to, { required: true });
+      ccList = normalizeRecipientList(cc);
+      bccList = normalizeRecipientList(bcc);
+    } catch {
+      return text({ error: 'recipients_invalid' });
+    }
+    if (preview.accountId !== accountId || typeof subject !== 'string'
+      || !sameRecipientList(preview.cc, ccList) || !sameRecipientList(preview.bcc, bccList)) {
       return text({ error: 'preview_invalid_or_expired' });
     }
     const previewAttachments = preview.attachments ?? [];
     const payload = normalizeSendPayload({
       accountId,
-      to,
+      to: toList,
+      cc: ccList,
+      bcc: bccList,
       subject,
       text: preview.text,
       html: preview.html,
-      mime: buildPreviewMime(registry.get(accountId), to, subject, preview.text, preview.html, preview.replyHeaders),
+      mime: buildPreviewMime(registry.get(accountId), toList, ccList, bccList, subject, preview.text, preview.html, preview.replyHeaders),
       attachments: previewAttachments
     });
     // Legacy callers may still provide copied bodies, but they can never replace the preview.
@@ -308,6 +352,8 @@ export function createPreviewBinding({
         principal: preview.principal,
         text: preview.text,
         html: preview.html,
+        cc: [...(preview.cc ?? [])],
+        bcc: [...(preview.bcc ?? [])],
         attachments: previewAttachments.map((item) => ({ ...item }))
       }
     });

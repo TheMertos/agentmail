@@ -1,6 +1,7 @@
 import { verifyApproval } from '../core/approval.mjs';
 import { redactToolError, redactValue } from '../security/redact.mjs';
 import { createAttachmentHandlers, normalizeSendPayload } from './attachment-tools.mjs';
+import { sameRecipientList } from '../mail/recipients.mjs';
 import { matchesPreviewBinding } from './preview-binding.mjs';
 
 /**
@@ -13,19 +14,8 @@ function text(value) {
 }
 
 /**
- * Compare approved and requested recipients in order.
- * @param {string[]} approved Recipients bound to the approval.
- * @param {string[]} requested Recipients on the send request.
- * @returns {boolean}
- */
-function sameRecipients(approved, requested) {
-  if (!Array.isArray(approved) || !Array.isArray(requested) || approved.length !== requested.length) return false;
-  return approved.every((recipient, index) => recipient === requested[index]);
-}
-
-/**
  * Build the message_send tool handler.
- * SMTP runs only after account, principal, recipient, and attachment checks agree.
+ * SMTP runs only after account, principal, To/Cc/Bcc, and attachment checks agree.
  * @param {{ pendingApprovals: Map<string, { approval: object, payload: object, principal: string, previewBinding?: object }>, registry: { principal: string, assertAccountAccess: Function }, store: object, now?: () => number }} deps Approval map, principal registry, and store.
  * @returns {(args: object, mailService: { sendMime: Function }) => Promise<{ content: { type: string, text: string }[] }>}
  */
@@ -42,7 +32,13 @@ export function createMessageSendHandler({ pendingApprovals, registry, store, no
     const entry = pendingApprovals.get(approvalId);
     if (!entry?.approval || !entry.payload) return text({ error: 'approval_not_found' });
     const supplied = Object.keys(rawPayload).length > 0;
-    const candidate = normalizeSendPayload({ ...entry.payload, ...rawPayload });
+    let candidate;
+    try {
+      candidate = normalizeSendPayload({ ...entry.payload, ...rawPayload });
+    } catch (error) {
+      if (error?.code === 'recipients_invalid') return text({ error: 'approval_invalid_or_expired' });
+      throw error;
+    }
     const payload = entry.payload;
     try {
       registry.assertAccountAccess(candidate.accountId);
@@ -51,7 +47,9 @@ export function createMessageSendHandler({ pendingApprovals, registry, store, no
     }
     if (entry.principal !== registry.principal) return text({ error: 'access_denied' });
     if (candidate.accountId !== payload.accountId
-      || !sameRecipients(payload.to, candidate.to)
+      || !sameRecipientList(payload.to, candidate.to)
+      || !sameRecipientList(payload.cc, candidate.cc)
+      || !sameRecipientList(payload.bcc, candidate.bcc)
       || candidate.subject !== payload.subject) {
       return text({ error: 'approval_invalid_or_expired' });
     }

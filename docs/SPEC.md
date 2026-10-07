@@ -11,7 +11,7 @@ AgentMail is a self-hosted, open-source mail client for reliable AI-assisted ema
 - Credentials are brokered by SecretFabric; plaintext secrets never enter chat, model context, logs, or the application database.
 - MCP security contract: the principal is derived from `HERMES_HOME`. Host paths are rejected and never read. `attachment_upload` returns metadata only. Approval is required before `message_send`. mail_account_register does not overwrite an existing account, secretRef, or connection.
 - Every external side effect is idempotent, auditable, and verified by provider read-back where possible.
-- An approval is bound to account, recipients, subject, body, quote, signature, attachments, and policy version.
+- An approval is bound to account, To, Cc, Bcc, subject, body, quote, signature, attachments, and policy version. Cc and Bcc are optional, normalized like To, and omitted headers stay absent.
 
 ## 3. Functional requirements
 
