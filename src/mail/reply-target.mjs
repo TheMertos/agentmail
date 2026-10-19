@@ -1,5 +1,19 @@
+/**
+ * Strip CR/LF from an untrusted remote Subject header before it is echoed back
+ * as a reply suggestion. A malicious sender can craft a Subject containing embedded
+ * control characters; without this, the suggestion could carry them into a caller's
+ * send_approval_create subject and smuggle extra MIME headers (see encodeSubject's
+ * own CRLF rejection in preview-binding.mjs, which this defends in depth).
+ * @param {string} subject Raw envelope subject from an untrusted source.
+ * @returns {string} Subject with any CR/LF removed.
+ */
+function sanitizeSubject(subject) {
+  return subject.replace(/[\r\n]+/g, ' ');
+}
+
 function withReplyPrefix(subject) {
-  return /^re:/i.test(subject) ? subject : `Re: ${subject}`;
+  const clean = sanitizeSubject(subject);
+  return /^re:/i.test(clean) ? clean : `Re: ${clean}`;
 }
 
 export function resolveReplyTarget({ store, message, accountId, sourceMessageKey, mode = 'reply' }) {

@@ -6,6 +6,23 @@ import { createAttachmentHandlers, normalizeSendPayload, resolveReplyAttachments
 import { normalizeRecipientList, sameRecipientList } from '../mail/recipients.mjs';
 import { resolveReplyTarget } from '../mail/reply-target.mjs';
 
+/**
+ * Write a server-side-only diagnostic line for a rejected send_approval_create call.
+ * The caller always receives the same undifferentiated 'preview_invalid_or_expired' error
+ * (tampering with Cc/Bcc must not let an attacker distinguish "expired" from "mismatched"),
+ * but operators debugging a legitimate failure need the real reason. Never include recipient
+ * addresses, subject text, or body content here — only structural facts and counts.
+ * @param {string} reason Internal-only reason code, never sent to the caller.
+ * @param {object} [details] Non-PII structural details (counts, booleans, ids).
+ */
+function logApprovalRejection(reason, details = {}) {
+  try {
+    process.stderr.write(`AgentMail send_approval_create rejected (internal): ${reason} ${JSON.stringify(details)}\n`);
+  } catch {
+    // Logging must never throw or block the rejection path.
+  }
+}
+
 const { simpleParser } = createRequire(import.meta.url)('mailparser');
 
 /**
@@ -69,11 +86,15 @@ function attachmentFailure(error) {
 
 /**
  * Encode a non-ASCII subject as a UTF-8 RFC 2047 encoded-word.
- * ASCII subjects remain readable and unchanged.
+ * ASCII subjects remain readable and unchanged. CR/LF are rejected outright: a subject
+ * is a single header value and must never be able to smuggle extra header lines (e.g. a
+ * hidden Bcc/Reply-To) into the outgoing MIME, bypassing the Cc/Bcc approval binding.
  * @param {string} subject Subject value.
  * @returns {string}
+ * @throws {Error} When subject contains a carriage return or line feed.
  */
 function encodeSubject(subject) {
+  if (/[\r\n]/.test(subject)) throw new Error('subject_invalid');
   if (/^[\x00-\x7F]*$/.test(subject)) return subject;
   return `=?UTF-8?B?${Buffer.from(subject, 'utf8').toString('base64')}?=`;
 }
@@ -295,7 +316,16 @@ export function createPreviewBinding({
   async function sendApprovalCreate({ previewId, accountId, to, cc, bcc, subject, text: bodyText, html, mime, attachments } = {}) {
     if (!previewId) return text({ error: 'preview_required' });
     const preview = pendingPreviews.get(previewId);
-    if (!preview || !Number.isInteger(preview.expiresAt) || now() > preview.expiresAt || preview.principal !== registry.principal) {
+    if (!preview) {
+      logApprovalRejection('preview_not_found', { previewId });
+      return text({ error: 'preview_invalid_or_expired' });
+    }
+    if (!Number.isInteger(preview.expiresAt) || now() > preview.expiresAt) {
+      logApprovalRejection('preview_expired', { previewId, expiresAt: preview.expiresAt, now: now() });
+      return text({ error: 'preview_invalid_or_expired' });
+    }
+    if (preview.principal !== registry.principal) {
+      logApprovalRejection('preview_principal_mismatch', { previewId });
       return text({ error: 'preview_invalid_or_expired' });
     }
     try {
@@ -313,8 +343,24 @@ export function createPreviewBinding({
     } catch {
       return text({ error: 'recipients_invalid' });
     }
-    if (preview.accountId !== accountId || typeof subject !== 'string'
-      || !sameRecipientList(preview.cc, ccList) || !sameRecipientList(preview.bcc, bccList)) {
+    if (preview.accountId !== accountId) {
+      logApprovalRejection('account_mismatch', { previewId });
+      return text({ error: 'preview_invalid_or_expired' });
+    }
+    if (typeof subject !== 'string') {
+      logApprovalRejection('subject_missing', { previewId });
+      return text({ error: 'preview_invalid_or_expired' });
+    }
+    if (/[\r\n]/.test(subject)) {
+      logApprovalRejection('subject_invalid_crlf', { previewId });
+      return text({ error: 'subject_invalid' });
+    }
+    if (!sameRecipientList(preview.cc, ccList)) {
+      logApprovalRejection('cc_mismatch', { previewId, previewCcCount: preview.cc?.length ?? 0, approvalCcCount: ccList.length });
+      return text({ error: 'preview_invalid_or_expired' });
+    }
+    if (!sameRecipientList(preview.bcc, bccList)) {
+      logApprovalRejection('bcc_mismatch', { previewId, previewBccCount: preview.bcc?.length ?? 0, approvalBccCount: bccList.length });
       return text({ error: 'preview_invalid_or_expired' });
     }
     const previewAttachments = preview.attachments ?? [];
@@ -330,11 +376,24 @@ export function createPreviewBinding({
       attachments: previewAttachments
     });
     // Legacy callers may still provide copied bodies, but they can never replace the preview.
-    if ((bodyText !== undefined && bodyText !== preview.text)
-      || (html !== undefined && html !== preview.html)
-      || (mime !== undefined && !matchesPreviewBinding(preview, { ...payload, mime }, registry.principal))
-      || (attachments !== undefined && !sameAttachments(previewAttachments, attachments))
-      || (attachments === undefined && previewAttachments.length > 0 && (bodyText !== undefined || html !== undefined || mime !== undefined))) {
+    if (bodyText !== undefined && bodyText !== preview.text) {
+      logApprovalRejection('text_override_rejected', { previewId });
+      return text({ error: 'preview_invalid_or_expired' });
+    }
+    if (html !== undefined && html !== preview.html) {
+      logApprovalRejection('html_override_rejected', { previewId });
+      return text({ error: 'preview_invalid_or_expired' });
+    }
+    if (mime !== undefined && !matchesPreviewBinding(preview, { ...payload, mime }, registry.principal)) {
+      logApprovalRejection('mime_binding_mismatch', { previewId });
+      return text({ error: 'preview_invalid_or_expired' });
+    }
+    if (attachments !== undefined && !sameAttachments(previewAttachments, attachments)) {
+      logApprovalRejection('attachments_mismatch', { previewId });
+      return text({ error: 'preview_invalid_or_expired' });
+    }
+    if (attachments === undefined && previewAttachments.length > 0 && (bodyText !== undefined || html !== undefined || mime !== undefined)) {
+      logApprovalRejection('attachments_implicitly_dropped', { previewId });
       return text({ error: 'preview_invalid_or_expired' });
     }
     try {
